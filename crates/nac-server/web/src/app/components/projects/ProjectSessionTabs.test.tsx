@@ -52,7 +52,7 @@ function session(
 afterEach(cleanup);
 
 describe("project session tab behavior identity", () => {
-  it("keeps flexible tabs readable and every behavior identifiable", () => {
+  it("sizes tabs to their titles and keeps every behavior identifiable", () => {
     const sessions = [
       session("orchestrator", "Plan the managed deployment rollout", "orchestrator"),
       session("direct", "Implement connection status feedback", "direct"),
@@ -82,8 +82,8 @@ describe("project session tab behavior identity", () => {
       expect(tab.querySelector("[data-session-tab-badge]")).toBeNull();
       expect(tab.closest(".chat-session-tab")?.className).toContain("w-full");
       const slot = tab.closest(".chat-session-tab")?.parentElement;
-      expect(slot?.className).toContain("flex-[1_0_224px]");
-      expect(slot?.className).toContain("min-w-[224px]");
+      expect(slot?.className).toContain("w-fit");
+      expect(slot?.className).toContain("flex-none");
       expect(slot?.className).toContain("max-w-[272px]");
       expect(screen.getByRole("button", { name: `Close ${title}` })).toBeTruthy();
     }
@@ -92,8 +92,15 @@ describe("project session tab behavior identity", () => {
       name: "Implement connection status feedback, Direct coding agent",
     });
     expect(active.getAttribute("aria-current")).toBe("page");
+    expect(active.className).toContain("pl-2");
+    expect(active.className).toContain("pr-2");
     expect(active.className).toContain("group-hover:pr-8");
     expect(active.className).toContain("group-has-[:focus-visible]:pr-8");
+    const close = screen.getByRole("button", {
+      name: "Close Implement connection status feedback",
+    });
+    expect(close.className).toContain("absolute");
+    expect(close.className).toContain("right-1");
 
     expect(screen.queryByText("Orchestrator")).toBeNull();
     expect(screen.queryByText("Direct")).toBeNull();

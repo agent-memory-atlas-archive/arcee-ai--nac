@@ -791,10 +791,21 @@ test("asks for immutable behavior on every first and new chat", async ({
     .locator(".chat-session-tab")
     .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().width));
   expect(widths).toHaveLength(3);
+  expect(new Set(widths.map((width) => Math.round(width))).size).toBeGreaterThan(1);
   for (const width of widths) {
-    expect(width).toBeGreaterThanOrEqual(223);
     expect(width).toBeLessThanOrEqual(273);
   }
+  const restingPadding = await page.locator("[data-session-tab-title]").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const style = node.ownerDocument.defaultView!.getComputedStyle(node.parentElement!);
+      return [style.paddingLeft, style.paddingRight];
+    }),
+  );
+  expect(restingPadding).toEqual([
+    ["8px", "8px"],
+    ["8px", "8px"],
+    ["8px", "8px"],
+  ]);
   await page.evaluate(() => {
     const browser = globalThis as unknown as { document: { fonts: { ready: Promise<unknown> } } };
     return browser.document.fonts.ready;

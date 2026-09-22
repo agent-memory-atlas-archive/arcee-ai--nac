@@ -39,10 +39,11 @@ import type {
   SessionSummarySnapshot,
 } from "@/app/types/api";
 
-// Three or more tabs should trade unused width for readable names, then stop
-// shrinking at 224px and let the existing one-row strip scroll. The 272px cap
-// keeps one or two tabs from becoming visually detached from their content.
-const SESSION_TAB_SLOT_CLASS = "w-auto flex-[1_0_224px] min-w-[224px] max-w-[272px]";
+// Size each tab from its title instead of distributing the strip's spare width:
+// equal flex growth leaves short titles with a visibly oversized empty tail.
+// Intrinsic, non-shrinking slots stay on one row and make the strip scroll once
+// their content reaches the existing 272px readability cap.
+const SESSION_TAB_SLOT_CLASS = "w-fit flex-none max-w-[272px]";
 
 const SESSION_BEHAVIOR_ICONS = {
   orchestrator: IconName.Orchestrator,
