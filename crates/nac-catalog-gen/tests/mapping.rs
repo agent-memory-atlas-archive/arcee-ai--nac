@@ -313,6 +313,7 @@ fn provider_env_maps_the_first_conventional_var_name() {
     assert_eq!(var("anthropic-messages"), Some("ANTHROPIC_API_KEY"));
     assert_eq!(var("deepseek-chat"), Some("DEEPSEEK_API_KEY"));
     assert_eq!(var("openai-responses"), Some("OPENAI_API_KEY"));
+    assert_eq!(var("openai-chat-completions"), Some("OPENAI_API_KEY"));
     // Missing and empty `env` lists map to None (no conventional name).
     assert_eq!(var("fireworks-chat"), None);
     assert_eq!(var("together-chat"), None);
@@ -514,6 +515,7 @@ fn provider_api_maps_to_default_base_url_with_normalization() {
     // Providers without models.dev `api` and without an override get none.
     assert_eq!(providers["anthropic-messages"].default_base_url, None);
     assert_eq!(providers["openai-responses"].default_base_url, None);
+    assert_eq!(providers["openai-chat-completions"].default_base_url, None);
     assert_eq!(providers["together-chat"].default_base_url, None);
 }
 

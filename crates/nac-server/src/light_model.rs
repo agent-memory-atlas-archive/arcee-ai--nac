@@ -1,11 +1,10 @@
 use anyhow::Result;
 use nac_core::{
     light_model::LightModelSettings,
-    model::{provider_for_model, BackendKind},
-    runtime::CredentialDestinationPolicy,
+    model::{provider_for_model, validate_model_base_url, BackendKind},
 };
 
-use crate::{enforce_trusted_base_url, nonblank_request_string};
+use crate::nonblank_request_string;
 
 /// A top-level generated credential the light model may inherit. During
 /// rotation, `previous` identifies references that should follow the new
@@ -17,26 +16,23 @@ pub(crate) struct InheritedCredential<'a> {
     pub previous: Option<&'a str>,
 }
 
-/// Normalize and destination-check the light model before persistence or
-/// launch.
+/// Normalize the light model before persistence or launch.
 pub(crate) fn normalize(
     light: LightModelSettings,
-    policy: &CredentialDestinationPolicy,
     inherited: Option<InheritedCredential<'_>>,
 ) -> Result<LightModelSettings> {
+    let base_url = light
+        .base_url
+        .map(|value| nonblank_request_string(value, "light_model.base_url"))
+        .transpose()?;
+    if let Some(base_url) = base_url.as_deref() {
+        validate_model_base_url(base_url)?;
+    }
     let mut light = LightModelSettings {
         model: nonblank_request_string(light.model, "light_model.model")?,
-        base_url: light
-            .base_url
-            .map(|value| nonblank_request_string(value, "light_model.base_url"))
-            .transpose()?,
+        base_url,
         ..light
     };
-    enforce_trusted_base_url(
-        light.backend.or_else(|| provider_for_model(&light.model)),
-        light.base_url.as_deref(),
-        policy,
-    )?;
     if let Some(credential) = inherited {
         rotate_inherited_credential(&mut light, credential);
     }

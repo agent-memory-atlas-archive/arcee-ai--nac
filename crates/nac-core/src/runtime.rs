@@ -57,8 +57,8 @@ pub use builders::{
 #[cfg(test)]
 use configuration::NonModelNacConfig;
 pub use configuration::{
-    CompactionConfig, ConfiguredModelIdentity, CredentialDestinationPolicy, ModelConfig, NacConfig,
-    PermissionConfig, SandboxConfig, SecurityConfig, StorageConfig, WorkerConfig,
+    CompactionConfig, ConfiguredModelIdentity, ModelConfig, NacConfig, PermissionConfig,
+    SandboxConfig, StorageConfig, WorkerConfig,
 };
 pub(crate) use contracts::OrchestratorSession;
 pub use contracts::{

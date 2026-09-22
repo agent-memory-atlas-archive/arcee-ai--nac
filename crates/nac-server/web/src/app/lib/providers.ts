@@ -6,6 +6,7 @@ import type { BackendKind, ManagedAuthProvider } from "@/app/types/api";
 
 const PROVIDER_LABELS = {
   "openai-responses": "OpenAI Responses",
+  "openai-chat-completions": "OpenAI Chat Completions",
   "chatgpt-codex-responses": "ChatGPT Codex Responses",
   "anthropic-messages": "Anthropic Messages",
   "deepseek-chat": "DeepSeek Chat",
@@ -20,6 +21,7 @@ export const PROVIDER_KINDS: BackendKind[] = [
   "arcee-api",
   "arcee-auth",
   "openai-responses",
+  "openai-chat-completions",
   "chatgpt-codex-responses",
   "anthropic-messages",
   "deepseek-chat",
@@ -43,6 +45,7 @@ export function providerOrder(backend: string): number {
  */
 const API_KEY_PROVIDERS: ReadonlySet<BackendKind> = new Set<BackendKind>([
   "openai-responses",
+  "openai-chat-completions",
   "anthropic-messages",
   "deepseek-chat",
   "fireworks-chat",

@@ -290,6 +290,8 @@ enum BackendArg {
     TogetherChat,
     #[value(name = "openai-responses")]
     OpenAiResponses,
+    #[value(name = "openai-chat-completions")]
+    OpenAiChatCompletions,
     #[value(name = "chatgpt-codex-responses")]
     ChatGptCodexResponses,
     #[value(name = "anthropic-messages")]
@@ -307,6 +309,7 @@ impl From<BackendArg> for BackendKind {
             BackendArg::FireworksChat => Self::FireworksChat,
             BackendArg::TogetherChat => Self::TogetherChat,
             BackendArg::OpenAiResponses => Self::OpenAiResponses,
+            BackendArg::OpenAiChatCompletions => Self::OpenAiChatCompletions,
             BackendArg::ChatGptCodexResponses => Self::ChatGptCodexResponses,
             BackendArg::AnthropicMessages => Self::AnthropicMessages,
             BackendArg::ArceeAuth => Self::ArceeAuth,

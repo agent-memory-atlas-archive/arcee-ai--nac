@@ -8,11 +8,12 @@ use crate::TEST_ENV_LOCK;
 use sha2::Digest;
 use std::collections::BTreeMap;
 
-const ALL_PROVIDERS: [BackendKind; 8] = [
+const ALL_PROVIDERS: [BackendKind; 9] = [
     BackendKind::DeepSeekChat,
     BackendKind::FireworksChat,
     BackendKind::TogetherChat,
     BackendKind::OpenAiResponses,
+    BackendKind::OpenAiChatCompletions,
     BackendKind::ChatGptCodexResponses,
     BackendKind::AnthropicMessages,
     BackendKind::ArceeAuth,
@@ -36,6 +37,10 @@ fn every_provider_ships_a_default_entry_with_its_wire_api() {
         (BackendKind::FireworksChat, ApiKind::OpenAiCompletions),
         (BackendKind::TogetherChat, ApiKind::OpenAiCompletions),
         (BackendKind::OpenAiResponses, ApiKind::OpenAiResponses),
+        (
+            BackendKind::OpenAiChatCompletions,
+            ApiKind::OpenAiCompletions,
+        ),
         (
             BackendKind::ChatGptCodexResponses,
             ApiKind::ChatGptCodexResponses,
@@ -87,7 +92,9 @@ fn pre_s4_matrix_accepts(provider: BackendKind, model: &str, effort: ReasoningEf
                 | ReasoningEffort::Medium
                 | ReasoningEffort::High
         ),
-        BackendKind::OpenAiResponses | BackendKind::ChatGptCodexResponses => {
+        BackendKind::OpenAiResponses
+        | BackendKind::OpenAiChatCompletions
+        | BackendKind::ChatGptCodexResponses => {
             effort != ReasoningEffort::Max || model.starts_with("gpt-5.6")
         }
         BackendKind::AnthropicMessages => {
@@ -135,6 +142,11 @@ fn seed_maps_transcribe_the_validation_matrix_exactly() {
     // exhaustively by `every_generated_entry_preserves_the_validation_matrix`.
     let models = ["test-model", "claude-opus-4-6-latest", "claude-3-5-sonnet"];
     for provider in ALL_PROVIDERS {
+        if provider == BackendKind::OpenAiChatCompletions {
+            let metadata = resolve(provider, "test-model");
+            assert!(metadata.thinking_level_map.supported_efforts().is_empty());
+            continue;
+        }
         for model in models {
             let metadata = resolve(provider, model);
             for effort in ALL_EFFORTS {
@@ -354,6 +366,46 @@ fn effective_settings_resolve_catalog_metadata_at_construction() {
         .resolved
         .thinking_level_map
         .is_supported(ReasoningEffort::High));
+}
+
+#[test]
+fn openai_catalog_fans_out_known_models_but_keeps_unknown_chat_conservative() {
+    let responses = resolve(BackendKind::OpenAiResponses, "gpt-5.6");
+    let chat = resolve(BackendKind::OpenAiChatCompletions, "gpt-5.6");
+    assert_eq!(chat.api, ApiKind::OpenAiCompletions);
+    assert_eq!(chat.context_window, responses.context_window);
+    assert_eq!(chat.max_tokens, responses.max_tokens);
+    assert_eq!(chat.cost, responses.cost);
+    assert_eq!(chat.image_input, responses.image_input);
+    assert_eq!(chat.thinking_level_map, responses.thinking_level_map);
+    assert_eq!(
+        chat.compat.completions_thinking_format,
+        Some(CompletionsThinkingFormat::OpenAi)
+    );
+    assert!(chat.compat.completions_include_stream_usage);
+    assert!(chat.compat.completions_parallel_tool_calls);
+
+    let unknown = resolve(BackendKind::OpenAiChatCompletions, "custom-unknown-model");
+    assert_eq!(unknown.source, ModelSource::ProviderDefault);
+    assert_eq!(
+        unknown.compat.completions_thinking_format,
+        Some(CompletionsThinkingFormat::OpenAi)
+    );
+    assert!(unknown.compat.completions_include_stream_usage);
+    assert!(unknown.compat.completions_parallel_tool_calls);
+    assert!(unknown.thinking_level_map.supported_efforts().is_empty());
+
+    let settings = EffectiveModelSettings::from_optional(
+        Some(BackendKind::OpenAiChatCompletions),
+        Some("custom-unknown-model".to_string()),
+        Some("https://gateway.example/v1".to_string()),
+        None,
+        Some("CUSTOM_OPENAI_KEY".to_string()),
+        BTreeMap::new(),
+    )
+    .expect("explicit backend makes an uncatalogued model resolvable");
+    assert_eq!(settings.resolved.source, ModelSource::ProviderDefault);
+    assert_eq!(settings.resolved.api, ApiKind::OpenAiCompletions);
 }
 
 #[test]
@@ -667,10 +719,10 @@ fn generated_entries_satisfy_catalog_invariants() {
             }
         }
     }
-    // Snapshot pin: 79 agent-compatible generated models plus 21 hand-seeded
-    // entries (2 deprecated deepseek models removed). Drift fails loudly here
-    // at regen/seed-edit time, forcing a deliberate review.
-    assert_eq!(entry_count, 94, "catalog model count drifted");
+    // Snapshot pin: 108 agent-compatible generated projections plus 15
+    // hand-seeded-only entries. Drift fails loudly here at regen/seed-edit
+    // time, forcing a deliberate review.
+    assert_eq!(entry_count, 123, "catalog model count drifted");
 }
 
 /// The S4 guard: every generated catalog entry — not just the S0 spot-check
@@ -895,6 +947,11 @@ fn api_listing_serves_every_provider_with_auth_and_managed_urls() {
             (BackendKind::TogetherChat, ProviderAuth::ApiKeyEnv, None),
             (BackendKind::OpenAiResponses, ProviderAuth::ApiKeyEnv, None),
             (
+                BackendKind::OpenAiChatCompletions,
+                ProviderAuth::ApiKeyEnv,
+                None
+            ),
+            (
                 BackendKind::ChatGptCodexResponses,
                 ProviderAuth::CodexOauth,
                 Some(CHATGPT_CODEX_CANONICAL_BASE_URL)
@@ -947,6 +1004,10 @@ fn api_listing_serves_catalog_default_base_urls() {
     );
     assert_eq!(
         default_base_url(BackendKind::OpenAiResponses),
+        Some("https://api.openai.com/v1")
+    );
+    assert_eq!(
+        default_base_url(BackendKind::OpenAiChatCompletions),
         Some("https://api.openai.com/v1")
     );
     assert_eq!(
@@ -1141,7 +1202,7 @@ fn api_listing_lists_only_real_entries_with_defaults_in_default_limits() {
     // assertions (transient Overlay entries from the refresh tests).
     let _guard = TEST_ENV_LOCK.lock().unwrap();
     let listing = api_listing();
-    assert_eq!(listing.providers.len(), 8);
+    assert_eq!(listing.providers.len(), 9);
     let mut total = 0;
     for provider in &listing.providers {
         // `_default` is served as default_limits, never as a model entry;
@@ -1167,7 +1228,7 @@ fn api_listing_lists_only_real_entries_with_defaults_in_default_limits() {
         total += provider.models.len();
     }
     // Same snapshot pin as `generated_entries_satisfy_catalog_invariants`.
-    assert_eq!(total, 94, "catalog model count drifted");
+    assert_eq!(total, 123, "catalog model count drifted");
 
     // The hand-seeded providers serve their maintained entries (the picker's
     // model lists) while their `_default` limits stay conservative fallbacks

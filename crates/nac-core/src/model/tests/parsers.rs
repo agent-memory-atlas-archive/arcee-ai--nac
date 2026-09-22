@@ -54,6 +54,31 @@ fn parses_deepseek_chat_output() {
 }
 
 #[test]
+fn parses_chat_completions_refusal_as_assistant_content() {
+    let parsed = parse_completions_response(
+        &json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "refusal": "I cannot help with that request."
+                }
+            }]
+        }),
+        "https://api.openai.com/v1/chat/completions",
+        "reasoning_content",
+    )
+    .unwrap();
+
+    assert_eq!(
+        parsed.assistant.content.as_deref(),
+        Some("I cannot help with that request.")
+    );
+    assert_eq!(parsed.finish_reason.as_deref(), Some("stop"));
+}
+
+#[test]
 fn parses_openai_responses_output() {
     let output = vec![
         json!({

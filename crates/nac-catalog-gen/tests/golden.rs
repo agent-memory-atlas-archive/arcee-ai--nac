@@ -29,7 +29,7 @@ fn recorded_fixture_regenerates_the_checked_in_catalog() {
 }
 
 #[test]
-fn golden_output_covers_the_five_models_dev_providers() {
+fn golden_output_covers_the_models_dev_provider_projections() {
     let generation = gen::generate(FIXTURE, OVERRIDES).expect("fixture generates");
     let providers: Vec<&str> = generation
         .catalog
@@ -43,6 +43,7 @@ fn golden_output_covers_the_five_models_dev_providers() {
             "anthropic-messages",
             "deepseek-chat",
             "fireworks-chat",
+            "openai-chat-completions",
             "openai-responses",
             "together-chat"
         ]
@@ -54,7 +55,7 @@ fn golden_output_covers_the_five_models_dev_providers() {
         .map(|provider| provider.models.len())
         .sum();
     assert_eq!(
-        total, 79,
+        total, 108,
         "models.dev snapshot agent-compatible model count drifted"
     );
 }
@@ -118,7 +119,7 @@ fn manifest_hash_matches_the_generated_bytes() {
         manifest.sha256,
         gen::hex_sha256(generation.catalog_json.as_bytes())
     );
-    assert_eq!(manifest.model_counts.len(), 5);
+    assert_eq!(manifest.model_counts.len(), 6);
 }
 
 #[test]

@@ -1,12 +1,13 @@
 {
-  "sha256": "059ac88eab8984c474e89114b69d5a88f20a29150ac4bc951a8f4bf91b64001e",
-  "generated_at": "2026-08-16T04:30:23Z",
+  "sha256": "b4812649a17667e9a23f774a91e5eacd13174b2b058cc505a746b095c31efb83",
+  "generated_at": "2026-09-22T20:03:41Z",
   "models_dev_url": "crates/nac-catalog-gen/fixtures/models-dev-api.json",
   "models_dev_etag": null,
   "model_counts": {
     "anthropic-messages": 13,
     "deepseek-chat": 2,
     "fireworks-chat": 17,
+    "openai-chat-completions": 29,
     "openai-responses": 29,
     "together-chat": 18
   }

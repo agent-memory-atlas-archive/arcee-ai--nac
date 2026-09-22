@@ -7,7 +7,7 @@
 //! hand-written seed catalog remains the source of every provider's
 //! `_default` entry (and the never-fail fallback if the embedded JSON ever
 //! failed to parse); generated data only adds per-model entries for the
-//! five models.dev providers.
+//! six projections of five models.dev upstreams.
 //!
 //! Record shape per model (the generator's `ModelDoc` contract):
 //! `display_name`, `context_window`, `max_tokens`, `cost` rates,
@@ -164,7 +164,11 @@ pub(super) fn merge_entries(
     if generated.default_base_url.is_some() {
         provider_catalog.default_base_url = generated.default_base_url;
     }
-    let compat = provider_catalog.default.compat.clone();
+    let compat = if provider == BackendKind::OpenAiChatCompletions {
+        super::seed::openai_chat_completions_compat()
+    } else {
+        provider_catalog.default.compat.clone()
+    };
     if source == ModelSource::Overlay {
         let ids = generated
             .models

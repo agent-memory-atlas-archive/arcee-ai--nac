@@ -5,8 +5,8 @@
 //! 1. the hand-written seed catalog (every provider's `_default` entry,
 //!    transcribing the `backend.rs` effort-validation matrix into data);
 //! 2. the generated models.dev baseline (S1; per-model limits, cost rates
-//!    and matrix-conformant thinking maps for the five models.dev
-//!    providers), embedded via `include_str!`;
+//!    and matrix-conformant thinking maps for the five models.dev upstreams
+//!    projected across six backends), embedded via `include_str!`;
 //! 3. the runtime overlay (S2): `$NAC_HOME/model-catalog/overlay.json`,
 //!    refreshed in the background from models.dev — see `overlay.rs`;
 //! 4. user overrides (S2): `$NAC_HOME/models.json` — see
@@ -37,7 +37,7 @@ mod overlay;
 mod overlay_tests;
 mod seed;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -49,9 +49,9 @@ pub use anthropic_overlay::spawn_anthropic_model_refresh;
 pub use arcee_overlay::spawn_arcee_model_refresh;
 pub use overlay::spawn_overlay_refresh;
 pub use types::{
-    ApiKind, AuthStatus, Compat, CompletionsThinkingFormat, CostTier, DefaultLimits,
-    ModelCostRates, ModelEntry, ModelListing, ModelMetadata, ModelSource, ProviderAuth,
-    ProviderConnection, ProviderListing, ThinkingLevelMap, FALLBACK_CONTEXT_WINDOW,
+    ApiKind, AuthStatus, Compat, CompletionsThinkingFormat, CompletionsTokenLimit, CostTier,
+    DefaultLimits, ModelCostRates, ModelEntry, ModelListing, ModelMetadata, ModelSource,
+    ProviderAuth, ProviderConnection, ProviderListing, ThinkingLevelMap, FALLBACK_CONTEXT_WINDOW,
     FALLBACK_MAX_TOKENS,
 };
 
@@ -64,6 +64,7 @@ pub(crate) fn api_kind_for(provider: BackendKind) -> ApiKind {
         BackendKind::DeepSeekChat
         | BackendKind::FireworksChat
         | BackendKind::TogetherChat
+        | BackendKind::OpenAiChatCompletions
         | BackendKind::ArceeAuth
         | BackendKind::ArceeApi => ApiKind::OpenAiCompletions,
         BackendKind::OpenAiResponses => ApiKind::OpenAiResponses,
@@ -202,14 +203,14 @@ struct ProviderCatalog {
     default: ModelMetadata,
     models: BTreeMap<String, ModelMetadata>,
     /// The provider's conventional credential env var name: the generated
-    /// baseline owns the five models.dev providers' names, the seed
+    /// baseline owns the six models.dev-backed projections' names, the seed
     /// hand-maintains arcee-api's, and a present overlay value upgrades.
     /// Managed providers carry `None` (their hint is the login command).
     /// Powers the `/models` auth-status hint and the conventional-var
     /// auto-selection in `EffectiveModelSettings`.
     credential_env_var: Option<String>,
     /// The provider's endpoint default: the generated baseline/overlay
-    /// layers carry the five models.dev providers' URLs (models.dev `api`
+    /// layers carry the six models.dev-backed projections' URLs (models.dev `api`
     /// or the curated SDK-default URL) and the seed hand-maintains
     /// arcee-api's. Managed providers carry `None` (their canonical URLs
     /// stay code-side, `managed_backend_base_url`). Fills a genuinely
@@ -268,7 +269,7 @@ impl ModelCatalog {
     /// this directly against temp homes, so they never touch the
     /// process-global catalog or the environment.
     #[cfg(test)]
-    fn load_from_home(home: Option<&Path>) -> (Self, Vec<CatalogWarning>) {
+    pub(crate) fn load_from_home(home: Option<&Path>) -> (Self, Vec<CatalogWarning>) {
         Self::load_layered(home, true)
     }
 
@@ -288,7 +289,7 @@ impl ModelCatalog {
     }
 
     /// The provider's catalog endpoint default, when any applied layer
-    /// carries one (the five models.dev providers and arcee-api; managed
+    /// carries one (the six models.dev-backed projections and arcee-api; managed
     /// providers have none).
     pub fn default_base_url(&self, provider: BackendKind) -> Option<String> {
         self.providers.get(&provider)?.default_base_url.clone()
@@ -305,8 +306,9 @@ impl ModelCatalog {
     /// the unique provider carrying a real entry (Baseline/Overlay/
     /// UserOverride) with that id wins. A collision (the same id on
     /// several providers — the hand-seeded arcee pair shares the Trinity
-    /// ids, and the codex seed overlaps the openai baseline) prefers the
-    /// first non-managed provider with a warning. Unknown ids resolve to
+    /// ids, and both Codex and Chat Completions overlap the OpenAI Responses
+    /// baseline) explicitly prefers OpenAI Responses, then the first
+    /// non-managed provider, with a warning. Unknown ids resolve to
     /// `None` (the caller renders them unrecognized).
     pub fn provider_for_model(&self, model: &str) -> Option<BackendKind> {
         let matches: Vec<BackendKind> = self
@@ -319,9 +321,17 @@ impl ModelCatalog {
             [] => None,
             [only] => Some(*only),
             [first, ..] => {
+                // The OpenAI catalog is projected to both public protocols.
+                // Model-only inference keeps the established Responses
+                // default; Chat Completions remains explicit-only.
                 let chosen = matches
                     .iter()
-                    .find(|provider| managed_backend_base_url(**provider).is_none())
+                    .find(|provider| **provider == BackendKind::OpenAiResponses)
+                    .or_else(|| {
+                        matches
+                            .iter()
+                            .find(|provider| managed_backend_base_url(**provider).is_none())
+                    })
                     .unwrap_or(first);
                 eprintln!(
                     "nac: model catalog: model id '{model}' exists on multiple providers ({}); resolving to '{chosen}'",

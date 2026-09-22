@@ -354,3 +354,59 @@ it("preserves exact inherited advanced settings when duplicate presets share bas
     client.clear();
   }
 });
+
+it("emits a custom public HTTPS endpoint without a separate trust repair", async () => {
+  vi.spyOn(api, "getManagedStatus").mockResolvedValue(hostStatus);
+  vi.spyOn(api, "listModelConfigs").mockResolvedValue({ configurations: [] });
+  vi.spyOn(api, "getModelCatalog").mockResolvedValue(catalog);
+  const discovery = vi.spyOn(api, "listProviderModels");
+  const onChange = vi.fn<(selection: LaunchModelSelection | null) => void>();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <ConfigurationsPanel invalid={false} onChange={onChange} />
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+  try {
+    fireEvent.click(await screen.findByRole("button", { name: "Browse Models" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create New" }));
+    fireEvent.click(screen.getByRole("button", { name: "Arcee API (Key)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Custom" }));
+    fireEvent.click(screen.getByRole("button", { name: "Arcee API (Key)" }));
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI Responses" }));
+
+    fireEvent.change(screen.getByPlaceholderText("Paste the provider key"), {
+      target: { value: "custom-secret" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("gpt-5.5"), {
+      target: { value: "custom-model" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("https://api.openai.com/v1"), {
+      target: { value: "https://gateway.noncanonical.example/v1" },
+    });
+
+    await waitFor(() =>
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: "save",
+        request: {
+          name: "custom-config-1",
+          backend: "openai-responses",
+          model: "custom-model",
+          base_url: "https://gateway.noncanonical.example/v1",
+          api_key: "custom-secret",
+        },
+      }),
+    );
+    expect(discovery).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        api_key: "custom-secret",
+        base_url: "https://gateway.noncanonical.example/v1",
+      }),
+    );
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});

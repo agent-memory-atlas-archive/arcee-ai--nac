@@ -27,6 +27,7 @@ fn api_key_backends_validate_selectors_and_auto_select_the_conventional_var() {
 
     let backends = [
         (BackendKind::OpenAiResponses, "OPENAI_API_KEY"),
+        (BackendKind::OpenAiChatCompletions, "OPENAI_API_KEY"),
         (BackendKind::TogetherChat, "TOGETHER_API_KEY"),
         (BackendKind::AnthropicMessages, "ANTHROPIC_API_KEY"),
         (BackendKind::DeepSeekChat, "DEEPSEEK_API_KEY"),
@@ -56,6 +57,10 @@ fn api_key_backends_validate_selectors_and_auto_select_the_conventional_var() {
     // managed backends never auto-select.
     assert_eq!(
         backend::auto_select_api_key_env(BackendKind::OpenAiResponses).as_deref(),
+        Some("OPENAI_API_KEY")
+    );
+    assert_eq!(
+        backend::auto_select_api_key_env(BackendKind::OpenAiChatCompletions).as_deref(),
         Some("OPENAI_API_KEY")
     );
     assert_eq!(
@@ -280,7 +285,7 @@ fn managed_backends_materialize_only_absent_base_urls() {
     }
 
     // Every API-key backend materializes its catalog endpoint default:
-    // the five models.dev providers from models.dev `api`/curated
+    // the six models.dev-backed projections from models.dev `api`/curated
     // overrides (the anthropic default is the API ROOT — the adapter
     // appends "/v1/messages" itself), arcee-api from the hand-seed.
     for (backend, expected) in [
@@ -291,6 +296,10 @@ fn managed_backends_materialize_only_absent_base_urls() {
         ),
         (BackendKind::TogetherChat, "https://api.together.xyz/v1"),
         (BackendKind::OpenAiResponses, "https://api.openai.com/v1"),
+        (
+            BackendKind::OpenAiChatCompletions,
+            "https://api.openai.com/v1",
+        ),
         (BackendKind::AnthropicMessages, "https://api.anthropic.com"),
         (BackendKind::ArceeApi, "https://api.arcee.ai/api/v1"),
     ] {
@@ -320,6 +329,51 @@ fn managed_backends_materialize_only_absent_base_urls() {
             "{backend}"
         );
     }
+}
+
+#[test]
+fn custom_api_key_endpoints_accept_public_https_without_weakening_url_hygiene() {
+    for backend in [
+        BackendKind::OpenAiResponses,
+        BackendKind::AnthropicMessages,
+        BackendKind::DeepSeekChat,
+        BackendKind::FireworksChat,
+        BackendKind::TogetherChat,
+    ] {
+        let base_url = "https://gateway.noncanonical.example/v1";
+        assert_eq!(
+            resolve_model_base_url(backend, Some(base_url.to_string())).unwrap(),
+            base_url,
+            "{backend}"
+        );
+    }
+
+    for (base_url, expected) in [
+        ("relative/path", "not a valid absolute URL"),
+        (
+            "ftp://gateway.example/v1",
+            "absolute http(s) URL with a host",
+        ),
+        (
+            "https://user:secret@gateway.example/v1",
+            "must not embed userinfo",
+        ),
+        ("http://gateway.example/v1", "requires HTTPS"),
+    ] {
+        let error =
+            resolve_model_base_url(BackendKind::OpenAiResponses, Some(base_url.to_string()))
+                .expect_err("unsafe custom endpoint must remain rejected");
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+
+    assert_eq!(
+        resolve_model_base_url(
+            BackendKind::OpenAiResponses,
+            Some("http://127.0.0.1:8080/v1".to_string()),
+        )
+        .unwrap(),
+        "http://127.0.0.1:8080/v1"
+    );
 }
 
 #[test]

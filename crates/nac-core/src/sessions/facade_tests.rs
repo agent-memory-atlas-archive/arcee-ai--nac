@@ -112,6 +112,35 @@ fn create_and_load_session_round_trip() {
 }
 
 #[test]
+fn openai_chat_completions_backend_round_trips_without_inference() {
+    let _guard = TEST_ENV_LOCK.lock().unwrap();
+    let store_path = temp_store_path("openai_chat_completions_round_trip");
+    let snapshot = new_snapshot(
+        "chat-session".to_string(),
+        PathBuf::from("/repo"),
+        "custom-model".to_string(),
+        "https://gateway.example/v1".to_string(),
+        BackendKind::OpenAiChatCompletions,
+        None,
+        None,
+        None,
+        Vec::new(),
+        Some("OPENAI_API_KEY".to_string()),
+        BTreeMap::new(),
+    );
+
+    create_session(&store_path, &snapshot).unwrap();
+    let loaded = load_session(&store_path, "chat-session").unwrap();
+
+    assert_eq!(loaded.backend, BackendKind::OpenAiChatCompletions);
+    assert_eq!(loaded.model, "custom-model");
+    assert_eq!(loaded.base_url, "https://gateway.example/v1");
+    assert_eq!(loaded.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+
+    let _ = std::fs::remove_dir_all(store_path.parent().unwrap());
+}
+
+#[test]
 fn behavior_round_trips_lists_and_cannot_change_during_state_save() {
     let _guard = TEST_ENV_LOCK.lock().unwrap();
     let store_path = temp_store_path("behavior_round_trip");

@@ -1,7 +1,8 @@
 //! nac-catalog-gen: generate nac-core's checked-in model catalog baseline.
 //!
 //! Pipeline: read models.dev `api.json` (fetched live by the binary, or a
-//! recorded fixture in tests) → extract nac's five models.dev providers →
+//! recorded fixture in tests) → extract nac's five models.dev upstreams into
+//! six backend projections (OpenAI fans out to both public protocols) →
 //! map each model to a seed entry (`limit` → context/max-tokens with the
 //! 128k/16k fallbacks, `cost` → rates, `reasoning_options` → thinking-level
 //! seeds, provider `env` → the conventional credential variable name, which
@@ -37,11 +38,12 @@ pub const FALLBACK_MAX_TOKENS: u64 = 16_384;
 /// models.dev provider id → nac `BackendKind` kebab id. Arcee and
 /// chatgpt-codex-responses are not models.dev providers; their catalog data
 /// stays hand-written in nac-core's seed module.
-pub const PROVIDER_MAP: [(&str, &str); 5] = [
+pub const PROVIDER_MAP: [(&str, &str); 6] = [
     ("deepseek", "deepseek-chat"),
     ("fireworks-ai", "fireworks-chat"),
     ("togetherai", "together-chat"),
     ("openai", "openai-responses"),
+    ("openai", "openai-chat-completions"),
     ("anthropic", "anthropic-messages"),
 ];
 
@@ -560,10 +562,10 @@ pub struct Generation {
 
 /// Run the full map + override pipeline over a models.dev `api.json` payload.
 ///
-/// The top level parses tolerantly and only nac's five providers are
-/// strictly decoded, so schema drift in unrelated providers (models.dev
-/// carries 150+) cannot break regeneration; drift inside a consumed
-/// provider is a hard error.
+/// The top level parses tolerantly and only nac's five upstream providers are
+/// strictly decoded into six backend projections, so schema drift in unrelated
+/// providers (models.dev carries 150+) cannot break regeneration; drift inside
+/// a consumed provider is a hard error.
 pub fn generate(api_json: &str, overrides_toml: &str) -> Result<Generation> {
     let raw: BTreeMap<String, serde_json::Value> =
         serde_json::from_str(api_json).context("parsing models.dev api.json")?;
@@ -585,7 +587,11 @@ pub fn generate(api_json: &str, overrides_toml: &str) -> Result<Generation> {
         };
         let provider: ModelsDevProvider = serde_json::from_value(raw_provider.clone())
             .with_context(|| format!("decoding models.dev provider '{models_dev_id}'"))?;
-        let provider_override = overrides.providers.get(nac_id);
+        let provider_override = overrides.providers.get(nac_id).or_else(|| {
+            (nac_id == "openai-chat-completions")
+                .then(|| overrides.providers.get("openai-responses"))
+                .flatten()
+        });
         let default_base_url =
             provider_default_base_url(models_dev_id, provider.api.as_deref(), provider_override)?;
         let mut models = BTreeMap::new();
