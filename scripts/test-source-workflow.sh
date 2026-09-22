@@ -69,10 +69,10 @@ while :; do sleep 1; done
 EOF
 cat >"$TMP/backend" <<'EOF'
 #!/bin/sh
-if [ "${FAKE_BACKEND_FAIL:-0}" = 1 ]; then exit 17; fi
 printf '%s\n' "$*" >"${FAKE_BACKEND_ARGS:?}"
 sh -c 'trap "exit 0" TERM INT; while :; do sleep 1; done' &
 printf '%s\n' "$!" >"${FAKE_BACKEND_DESCENDANT:?}"
+if [ "${FAKE_BACKEND_FAIL:-0}" = 1 ]; then exit 17; fi
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
 EOF
@@ -119,5 +119,9 @@ else
   status=$?
 fi
 [[ "$status" -eq 17 ]] || fail "backend failure returned $status instead of 17"
+[[ -f "$TMP/backend-failure-backend-child" ]] || fail "failing backend did not start its descendant"
+backend_failure_child=$(cat "$TMP/backend-failure-backend-child")
+sleep 0.2
+kill -0 "$backend_failure_child" 2>/dev/null && fail "descendant of exited backend survived cleanup"
 
 echo "source workflow contracts passed"

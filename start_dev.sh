@@ -71,16 +71,24 @@ job_is_running() {
   return 1
 }
 
+process_group_is_running() {
+  local pid="$1"
+  kill -0 "-$pid" 2>/dev/null
+}
+
 terminate_group() {
   local pid="$1"
   [[ -n "$pid" ]] || return 0
-  if job_is_running "$pid"; then
+  # The job leader may already have exited while one of its descendants is
+  # still alive. Probe the process group itself so cleanup still reaches those
+  # descendants instead of relying on Bash's now-completed job table entry.
+  if process_group_is_running "$pid"; then
     kill -TERM "-$pid" 2>/dev/null || true
     for _ in $(seq 1 50); do
-      job_is_running "$pid" || break
+      process_group_is_running "$pid" || break
       sleep 0.1
     done
-    if job_is_running "$pid"; then
+    if process_group_is_running "$pid"; then
       kill -KILL "-$pid" 2>/dev/null || true
     fi
   fi

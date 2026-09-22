@@ -9,6 +9,8 @@ describe("Vite development proxy", () => {
 
     expect(API_PREFIXES).toContain("/health");
     expect(API_PREFIXES).toContain("/sessions");
+    expect(API_PREFIXES).toContain("/managed");
+    expect(API_PREFIXES).toContain("/__managed");
     expect(Object.keys(proxy)).toEqual(API_PREFIXES);
     for (const prefix of API_PREFIXES) {
       expect(proxy[prefix]).toEqual({ target, changeOrigin: true });
