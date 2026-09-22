@@ -3,6 +3,7 @@ mod build_identity;
 mod compaction;
 mod delegation_runtime;
 mod delivery;
+mod executable;
 mod filesystem;
 mod fork;
 mod light_model;
@@ -88,24 +89,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-
-pub(crate) fn running_invocation_name() -> String {
-    #[cfg(test)]
-    {
-        "nac-web".to_string()
-    }
-    #[cfg(not(test))]
-    {
-        std::env::current_exe()
-            .ok()
-            .and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "nac-web".to_string())
-    }
-}
 
 use anyhow::{anyhow, Context, Result};
 #[cfg(test)]
@@ -518,10 +501,7 @@ impl SessionManager {
             &config,
             build_identity::store_track(),
         );
-        let running_executable =
-            std::env::current_exe().context("failed to resolve current executable")?;
-        let worker_executable =
-            resolve_worker_executable(options.worker_executable, running_executable)?;
+        let worker_executable = executable::worker_executable(options.worker_executable)?;
 
         // This is deliberately before any managed model, credential, clone,
         // reconciliation, or listener setup. Only an exact controller-authored
@@ -1998,26 +1978,6 @@ fn frontend_command_name(command: SlashCommand) -> &'static str {
 fn canonicalize_dir(path: PathBuf) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("failed to resolve directory {}", path.display()))
-}
-
-fn canonicalize_file(path: PathBuf) -> Result<PathBuf> {
-    let resolved = path
-        .canonicalize()
-        .with_context(|| format!("failed to resolve executable {}", path.display()))?;
-    if !resolved.is_file() {
-        anyhow::bail!("{} is not a file", resolved.display());
-    }
-    Ok(resolved)
-}
-
-fn resolve_worker_executable(
-    configured: Option<PathBuf>,
-    running_executable: PathBuf,
-) -> Result<PathBuf> {
-    configured
-        .map(canonicalize_file)
-        .transpose()
-        .map(|configured| configured.unwrap_or(running_executable))
 }
 
 #[cfg(test)]

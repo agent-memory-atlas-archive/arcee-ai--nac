@@ -21,8 +21,9 @@ impl<'a> ModelCatalogApplication<'a> {
     }
 
     pub(crate) fn listing(&self) -> ModelListing {
-        let mut listing =
-            nac_core::model::api_listing_for_invocation(&crate::running_invocation_name());
+        let mut listing = nac_core::model::api_listing_for_invocation(
+            &crate::executable::running_invocation_name(),
+        );
         self.overlay_saved_provider_connections(&mut listing);
 
         if let (Some(config), Some(profile)) =

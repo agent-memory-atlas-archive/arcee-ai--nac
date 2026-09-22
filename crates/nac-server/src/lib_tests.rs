@@ -23,15 +23,6 @@ use tower::ServiceExt;
 
 pub(crate) static SERVER_MODEL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[test]
-fn worker_descendants_default_to_the_exact_running_executable() {
-    let running = PathBuf::from("/tmp/source install with spaces/nac-my-branch");
-    assert_eq!(
-        resolve_worker_executable(None, running.clone()).unwrap(),
-        running
-    );
-}
-
 async fn point_session_at_hanging_endpoint(
     root: &std::path::Path,
     session_id: &str,
