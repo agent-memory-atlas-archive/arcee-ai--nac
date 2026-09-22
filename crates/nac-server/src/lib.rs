@@ -3,6 +3,7 @@ mod build_identity;
 mod compaction;
 mod delegation_runtime;
 mod delivery;
+mod executable;
 mod filesystem;
 mod fork;
 mod light_model;
@@ -500,11 +501,7 @@ impl SessionManager {
             &config,
             build_identity::store_track(),
         );
-        let worker_executable = options
-            .worker_executable
-            .map(canonicalize_file)
-            .transpose()?
-            .unwrap_or(std::env::current_exe().context("failed to resolve current executable")?);
+        let worker_executable = executable::worker_executable(options.worker_executable)?;
 
         // This is deliberately before any managed model, credential, clone,
         // reconciliation, or listener setup. Only an exact controller-authored
@@ -1981,16 +1978,6 @@ fn frontend_command_name(command: SlashCommand) -> &'static str {
 fn canonicalize_dir(path: PathBuf) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("failed to resolve directory {}", path.display()))
-}
-
-fn canonicalize_file(path: PathBuf) -> Result<PathBuf> {
-    let resolved = path
-        .canonicalize()
-        .with_context(|| format!("failed to resolve executable {}", path.display()))?;
-    if !resolved.is_file() {
-        anyhow::bail!("{} is not a file", resolved.display());
-    }
-    Ok(resolved)
 }
 
 #[cfg(test)]

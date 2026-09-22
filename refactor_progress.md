@@ -1047,7 +1047,7 @@ post-review note says otherwise:
 
 ## Exact manual test instructions
 
-1. Run `make demo`, open the printed loopback URL, create a disposable local
+1. Run `make run`, open the printed loopback URL, create a disposable local
    Project, select each of the three behavior cards in turn, and confirm the
    created chat labels the chosen immutable behavior. Use **New Chat** to verify
    that behavior selection is requested again.

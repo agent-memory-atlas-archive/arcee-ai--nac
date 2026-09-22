@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use nac_core::{
     model::{
         run_arcee_auth_action, run_codex_auth_action, ArceeAuthAction, BackendKind,
@@ -35,7 +35,7 @@ const BUILD_VERSION: &str = concat!(
 #[command(
     name = "nac-web",
     about = "Run the NAC web dashboard and manage credentials and updates",
-    long_about = "Run the NAC web dashboard for a project, or use a command to manage credentials or upgrade nac-web.\n\nWith no command, nac-web serves the selected project and opens the dashboard in the default browser when run interactively.",
+    long_about = "Run the NAC web dashboard for a project, or use a command to manage credentials or upgrade this executable.\n\nWith no command, this executable serves the selected project and opens the dashboard in the default browser when run interactively.",
     version = RELEASE_VERSION,
     long_version = BUILD_VERSION,
     args_conflicts_with_subcommands = true,
@@ -62,7 +62,7 @@ enum RootCommand {
     #[command(version = RELEASE_VERSION, long_version = BUILD_VERSION)]
     ArceeAuth(ArceeAuthCli),
 
-    /// Download and reinstall the latest nac-web release
+    /// Download and reinstall the latest stable NAC release
     #[command(version = RELEASE_VERSION, long_version = BUILD_VERSION)]
     Upgrade(UpgradeCli),
 
@@ -115,7 +115,7 @@ struct ServerCli {
 
     /// Executable to launch for managed worker dispatch.
     ///
-    /// Defaults to the running nac-web executable.
+    /// Defaults to the running executable.
     #[arg(long)]
     worker_executable: Option<PathBuf>,
 
@@ -191,10 +191,9 @@ enum ArceeAuthCommand {
 
 #[derive(Args)]
 struct UpgradeCli {
-    /// Directory containing the nac-web executable to replace.
+    /// Directory containing the executable to replace.
     ///
-    /// Defaults to $INSTALL_DIR when set, otherwise the current nac-web
-    /// executable directory.
+    /// Defaults to $INSTALL_DIR when set, otherwise the current executable directory.
     #[arg(long)]
     install_dir: Option<PathBuf>,
 
@@ -478,15 +477,32 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let invocation_name = current_invocation_name();
+    let matches = cli_command(&invocation_name).get_matches();
+    let cli = Cli::from_arg_matches(&matches).map_err(|error| anyhow!(error.to_string()))?;
     match cli.command {
-        None => run_server(cli.server).await,
+        None => run_server(cli.server, &invocation_name).await,
         Some(RootCommand::ManagedWorker(worker)) => run_managed_worker(worker).await,
         Some(RootCommand::GitHubCredential(helper)) => run_github_credential(helper).await,
-        Some(RootCommand::CodexAuth(auth)) => run_codex_auth_cli(auth).await,
-        Some(RootCommand::ArceeAuth(auth)) => run_arcee_auth_cli(auth).await,
-        Some(RootCommand::Upgrade(upgrade)) => run_upgrade_cli(upgrade).await,
+        Some(RootCommand::CodexAuth(auth)) => run_codex_auth_cli(auth, &invocation_name).await,
+        Some(RootCommand::ArceeAuth(auth)) => run_arcee_auth_cli(auth, &invocation_name).await,
+        Some(RootCommand::Upgrade(upgrade)) => run_upgrade_cli(upgrade, &invocation_name).await,
     }
+}
+
+fn current_invocation_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "nac-web".to_string())
+}
+
+fn cli_command(invocation_name: &str) -> clap::Command {
+    Cli::command().bin_name(invocation_name.to_string())
 }
 
 async fn run_github_credential(cli: GitHubCredentialCli) -> Result<()> {
@@ -532,7 +548,7 @@ async fn resolve_github_credential(
     Ok(Some(token))
 }
 
-async fn run_server(cli: ServerCli) -> Result<()> {
+async fn run_server(cli: ServerCli, invocation_name: &str) -> Result<()> {
     let bind = cli.bind_addr();
     let bind_policy = cli.bind_policy();
     let managed_config_path = cli
@@ -573,7 +589,13 @@ async fn run_server(cli: ServerCli) -> Result<()> {
     // dashboard launch goes through this same path.
     serve_with_policy(bind, bind_policy, manager, |bound| {
         let url = dashboard_url(bound);
-        eprintln!("nac-web listening on {url}");
+        eprintln!("{invocation_name} listening on {url}");
+        eprintln!(
+            "build: {} {} ({})",
+            env!("NAC_BUILD_TRACK"),
+            env!("NAC_BUILD_ID"),
+            env!("NAC_SOURCE_REVISION")
+        );
         eprintln!("store: {store_path}");
         if open {
             eprintln!("opening the dashboard in your browser…");
@@ -803,18 +825,18 @@ fn internal_sandbox_mounts(args: &SandboxArgs) -> Result<Vec<(PathBuf, PathBuf, 
     Ok(mounts)
 }
 
-async fn run_codex_auth_cli(cli: CodexAuthCli) -> Result<()> {
+async fn run_codex_auth_cli(cli: CodexAuthCli, invocation_name: &str) -> Result<()> {
     match cli.command {
         Some(command) => {
             let is_login = matches!(command, CodexAuthCommand::Login);
             run_codex_auth_action(codex_auth_action(command)).await?;
             if is_login {
-                println!("Login complete. Run `nac-web` to start the dashboard.");
+                println!("{}", login_complete_message(invocation_name));
             }
             Ok(())
         }
         None => {
-            let mut root = Cli::command();
+            let mut root = cli_command(invocation_name);
             root.find_subcommand_mut("codex-auth")
                 .ok_or_else(|| anyhow!("codex-auth command is missing from the CLI definition"))?
                 .print_help()?;
@@ -832,18 +854,18 @@ fn codex_auth_action(command: CodexAuthCommand) -> CodexAuthAction {
     }
 }
 
-async fn run_arcee_auth_cli(cli: ArceeAuthCli) -> Result<()> {
+async fn run_arcee_auth_cli(cli: ArceeAuthCli, invocation_name: &str) -> Result<()> {
     match cli.command {
         Some(command) => {
             let is_login = matches!(command, ArceeAuthCommand::Login);
             run_arcee_auth_action(arcee_auth_action(command)).await?;
             if is_login {
-                println!("Login complete. Run `nac-web` to start the dashboard.");
+                println!("{}", login_complete_message(invocation_name));
             }
             Ok(())
         }
         None => {
-            let mut root = Cli::command();
+            let mut root = cli_command(invocation_name);
             root.find_subcommand_mut("arcee-auth")
                 .ok_or_else(|| anyhow!("arcee-auth command is missing from the CLI definition"))?
                 .print_help()?;
@@ -851,6 +873,10 @@ async fn run_arcee_auth_cli(cli: ArceeAuthCli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn login_complete_message(invocation_name: &str) -> String {
+    format!("Login complete. Run `{invocation_name}` to start the dashboard.")
 }
 
 fn arcee_auth_action(command: ArceeAuthCommand) -> ArceeAuthAction {
@@ -861,11 +887,16 @@ fn arcee_auth_action(command: ArceeAuthCommand) -> ArceeAuthAction {
     }
 }
 
-async fn run_upgrade_cli(cli: UpgradeCli) -> Result<()> {
+async fn run_upgrade_cli(cli: UpgradeCli, invocation_name: &str) -> Result<()> {
     if cli.pre_release {
         let _compatibility_confirmation = cli.yes;
         return Err(anyhow!(
             "prerelease upgrades are unsupported; NAC has no RC, nightly, or preview channel"
+        ));
+    }
+    if env!("NAC_BUILD_TRACK") == "dev" {
+        return Err(anyhow!(
+            "{invocation_name} is a dev source build and cannot self-upgrade; rebuild and reinstall it from the checkout with `make install-dev`"
         ));
     }
     let request = UpgradeRequest {
@@ -1290,11 +1321,32 @@ thread_timeout_secs = 7200
         let Some(RootCommand::Upgrade(upgrade)) = cli.command else {
             panic!("expected upgrade command");
         };
-        let error = run_upgrade_cli(upgrade).await.unwrap_err().to_string();
+        let error = run_upgrade_cli(upgrade, "nac-web")
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(
             error.contains("no RC, nightly, or preview channel"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn dev_upgrade_fails_before_resolution_download_or_installation() {
+        assert_eq!(env!("NAC_BUILD_TRACK"), "dev");
+        let cli = Cli::try_parse_from(["nac-my-branch", "upgrade"]).unwrap();
+        let Some(RootCommand::Upgrade(upgrade)) = cli.command else {
+            panic!("expected upgrade command");
+        };
+        let error = run_upgrade_cli(upgrade, "nac-my-branch")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("nac-my-branch is a dev source build"),
+            "{error}"
+        );
+        assert!(error.contains("make install-dev"), "{error}");
     }
 
     #[test]
@@ -1470,13 +1522,13 @@ thread_timeout_secs = 7200
     fn root_help_documents_public_command_and_server_contracts() {
         let help = rendered_help(&["nac-web", "--help"]);
         for expected in [
-            "With no command, nac-web serves the selected project",
+            "With no command, this executable serves the selected project",
             "codex-auth",
             "Manage ChatGPT credentials used by Codex models",
             "arcee-auth",
             "Manage Arcee account credentials",
             "upgrade",
-            "Download and reinstall the latest nac-web release",
+            "Download and reinstall the latest stable NAC release",
             "-p, --port <PORT>",
             "127.0.0.1",
             "1-65535",
@@ -1498,6 +1550,24 @@ thread_timeout_secs = 7200
                 .expect("generated root help command must be available");
             assert_eq!(generated_help.kind(), clap::error::ErrorKind::DisplayHelp);
         }
+    }
+
+    #[test]
+    fn help_and_actionable_hints_use_the_exact_invocation_name() {
+        let error = cli_command("nac-my-branch")
+            .try_get_matches_from(["ignored", "codex-auth", "login", "--help"])
+            .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("Usage: nac-my-branch codex-auth login"),
+            "{help}"
+        );
+        assert!(!help.contains("Usage: nac-web"), "{help}");
+        assert_eq!(
+            login_complete_message("nac-my-branch"),
+            "Login complete. Run `nac-my-branch` to start the dashboard."
+        );
     }
 
     #[test]
@@ -1560,10 +1630,10 @@ thread_timeout_secs = 7200
     fn upgrade_help_documents_reinstall_and_install_directory() {
         let help = rendered_help(&["nac-web", "upgrade", "--help"]);
         for expected in [
-            "Download and reinstall the latest nac-web release",
+            "Download and reinstall the latest stable NAC release",
             "--install-dir <INSTALL_DIR>",
             "$INSTALL_DIR",
-            "current nac-web executable directory",
+            "current executable directory",
         ] {
             assert!(help.contains(expected), "missing {expected:?}:\n{help}");
         }
