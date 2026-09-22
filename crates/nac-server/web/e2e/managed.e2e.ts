@@ -475,6 +475,38 @@ test("completes the managed first-run, write-only secret, and clone journey", as
   });
 });
 
+test("keeps GitHub Connected visible after device authorization and reopening settings", async ({
+  harness,
+  page,
+}, testInfo) => {
+  await installManagedDouble(page);
+  await page.goto(harness.baseUrl);
+  const openGitHub = async () => {
+    await page.getByRole("button", { name: "Open the menu" }).click();
+    await page.getByRole("button", { name: "Managed host" }).click();
+    await page.getByRole("button", { name: "GitHub", exact: true }).click();
+  };
+  await openGitHub();
+  const panel = page.getByTestId("managed-github-settings");
+  await panel.getByRole("button", { name: "Connect GitHub", exact: true }).click();
+  await expect(page.getByTestId("github-device-code")).toBeVisible();
+  await expect(panel.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(panel.getByText("@managed-e2e", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Connect GitHub", exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Reconnect GitHub" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await openGitHub();
+  await expect(panel.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByText("GitHub connected", { exact: true })).toHaveCount(0);
+  const screenshot = testInfo.outputPath("github-connected.png");
+  await page.screenshot({ path: screenshot, animations: "disabled" });
+  await testInfo.attach("GitHub connected — persistent desktop state", {
+    path: screenshot,
+    contentType: "image/png",
+  });
+});
+
 test("runs and reload-recovers a durable latest-beta upgrade through the same-origin facade", async ({
   harness,
   page,
