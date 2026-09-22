@@ -1,6 +1,84 @@
 use super::*;
 
 #[tokio::test]
+async fn custom_public_https_endpoints_persist_for_primary_and_light_models() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("custom_public_https");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("server-test-key"));
+    let manager = test_manager(&root);
+    let store_path = root.join("store.db");
+
+    let primary_url = "https://gateway.noncanonical.example/v1";
+    let light_url = "https://light.noncanonical.example/v1";
+    let created = manager
+        .create_session(CreateSessionRequest {
+            model: RequestField::Value("custom-primary-model".to_string()),
+            base_url: RequestField::Value(primary_url.to_string()),
+            backend: RequestField::Value("openai-responses".to_string()),
+            api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
+            light_model: RequestField::Value(LightModelSettings {
+                model: "custom-light-model".to_string(),
+                backend: Some(BackendKind::OpenAiResponses),
+                base_url: Some(light_url.to_string()),
+                api_key_env: None,
+                reasoning_effort: None,
+            }),
+            ..CreateSessionRequest::default()
+        })
+        .await
+        .expect("a public HTTPS gateway must launch without a host allowlist");
+    let session_id = created.metadata.session_id.unwrap();
+    let stored = sessions::load_session(&store_path, &session_id).unwrap();
+    assert_eq!(stored.base_url, primary_url);
+    assert_eq!(
+        stored
+            .light_model
+            .as_ref()
+            .and_then(|light| light.base_url.as_deref()),
+        Some(light_url)
+    );
+
+    manager
+        .inner
+        .active_sessions
+        .write()
+        .await
+        .remove(&session_id);
+    let updated_primary = "https://updated.noncanonical.example/v2";
+    let updated_light = "https://updated-light.noncanonical.example/v2";
+    manager
+        .update_session_config(
+            &session_id,
+            UpdateConfigRequest {
+                base_url: RequestField::Value(updated_primary.to_string()),
+                light_model: RequestField::Value(LightModelSettings {
+                    model: "custom-light-model-v2".to_string(),
+                    backend: Some(BackendKind::OpenAiResponses),
+                    base_url: Some(updated_light.to_string()),
+                    api_key_env: None,
+                    reasoning_effort: None,
+                }),
+                ..UpdateConfigRequest::default()
+            },
+        )
+        .await
+        .expect("an inactive session must accept a new public HTTPS gateway");
+    let stored = sessions::load_session(&store_path, &session_id).unwrap();
+    assert_eq!(stored.base_url, updated_primary);
+    assert_eq!(
+        stored
+            .light_model
+            .as_ref()
+            .and_then(|light| light.base_url.as_deref()),
+        Some(updated_light)
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn create_inherits_overrides_and_null_clears_optional_config() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("create_tristate");

@@ -1099,10 +1099,10 @@ async fn browse_ssh_handler(
 /// Validate a credential by asking its provider which models it may use.
 ///
 /// A key arrives in the request body and is forwarded once; it is never stored
-/// by this route, and the destination goes through the same credential trust
-/// check as a session launch. A provider signed in through the browser has no
-/// key to send, so the stored login answers instead — and its answer is the
-/// same evidence the launch UI needs that the login still works.
+/// by this route. The destination goes through the same URL validation as a
+/// session launch. A provider signed in through the browser has no key to send,
+/// so the stored login answers instead — and its answer is the same evidence
+/// the launch UI needs that the login still works.
 #[utoipa::path(
     post,
     path = "/providers/models",
@@ -1192,12 +1192,6 @@ async fn provider_models_handler(
             status: StatusCode::BAD_REQUEST,
             message: format!("backend '{backend}' has no default base URL; supply one"),
         })?;
-    enforce_trusted_base_url(
-        Some(backend),
-        Some(base_url.as_str()),
-        &NacConfig::load_credential_destination_policy(&manager.inner.root_cwd)?,
-    )?;
-
     let models = list_provider_models(backend, &base_url, &api_key)
         .await
         .map_err(|error| ApiError {

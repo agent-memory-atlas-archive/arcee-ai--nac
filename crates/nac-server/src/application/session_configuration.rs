@@ -4,14 +4,13 @@ use anyhow::{anyhow, Result};
 use nac_core::{
     light_model::LightModelSettings,
     model::{validate_model_configuration, EffectiveModelSettings},
-    runtime::NacConfig,
     sessions,
 };
 
 use crate::{
-    application::Field, config_replacement_conflict, enforce_trusted_base_url, light_model,
-    nonblank_request_string, parse_prospective_model_config, request_configuration_error,
-    request_configuration_error_from, validated_compaction_threshold, SessionManager,
+    application::Field, config_replacement_conflict, light_model, nonblank_request_string,
+    parse_prospective_model_config, request_configuration_error, request_configuration_error_from,
+    validated_compaction_threshold, SessionManager,
 };
 
 #[derive(Default)]
@@ -106,8 +105,6 @@ impl<'a> SessionConfigurationApplication<'a> {
         let behavior = sessions::load_session_behavior(&self.manager.inner.store_path, session_id)?;
         let current = sessions::load_session_config(&self.manager.inner.store_path, session_id)?;
         let mut prospective = current.clone();
-        // The light model needs the credential destination policy, which the
-        // plain field patch does not, so it is settled here instead.
         let light_field = std::mem::take(&mut request.light_model);
         apply_patch(&mut prospective, request)?;
         if matches!(&light_field, Field::Unchanged)
@@ -149,22 +146,8 @@ impl<'a> SessionConfigurationApplication<'a> {
                     name: prospective.api_key_env.as_deref(),
                     previous: current.api_key_env.as_deref(),
                 });
-                prospective.light_model = Some(light_model::normalize(
-                    light,
-                    &NacConfig::load_credential_destination_policy(&self.manager.inner.root_cwd)?,
-                    inherited,
-                )?);
+                prospective.light_model = Some(light_model::normalize(light, inherited)?);
             }
-        }
-
-        // An untouched destination carries no new risk, so only a patch that
-        // moves the endpoint or switches the credential type is authorized.
-        if !base_url_omitted || backend_selected {
-            enforce_trusted_base_url(
-                Some(backend),
-                Some(prospective.base_url.as_str()),
-                &NacConfig::load_credential_destination_policy(&self.manager.inner.root_cwd)?,
-            )?;
         }
 
         let _settings = EffectiveModelSettings::new(

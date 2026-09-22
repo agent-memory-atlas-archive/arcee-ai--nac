@@ -16,9 +16,9 @@ use nac_core::{
 };
 
 use crate::{
-    create_compaction_threshold_override, enforce_trusted_base_url, light_model, model_options,
-    nonblank, request_configuration_error_from, sandbox_options, sandbox_requested,
-    ResolvedLaunchLocation, SessionManager, SshRequest,
+    create_compaction_threshold_override, light_model, model_options, nonblank,
+    request_configuration_error_from, sandbox_options, sandbox_requested, ResolvedLaunchLocation,
+    SessionManager, SshRequest,
 };
 
 use super::Field;
@@ -346,27 +346,9 @@ impl<'a> SessionCreationApplication<'a> {
                         previous: None,
                     })
                 });
-                Some(light_model::normalize(
-                    light,
-                    &NacConfig::load_credential_destination_policy(&location.config_cwd)?,
-                    inherited,
-                )?)
+                Some(light_model::normalize(light, inherited)?)
             }
         };
-        // Mirror the launch-time resolution so the destination is checked
-        // against the backend the session will actually use.
-        let launch_backend = model.backend.or_else(|| {
-            model
-                .api_model
-                .as_deref()
-                .or(config.model.model.as_deref())
-                .and_then(provider_for_model)
-        });
-        enforce_trusted_base_url(
-            launch_backend,
-            model.api_base_url.as_deref(),
-            &NacConfig::load_credential_destination_policy(&location.config_cwd)?,
-        )?;
         let mut run_config = runtime::build_run_config_for_project_with_behavior(
             RunOptions {
                 workspace_cwd: location.workspace_cwd,

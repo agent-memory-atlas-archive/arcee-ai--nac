@@ -151,10 +151,10 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::{Config as SwaggerConfig, SwaggerUi};
 
 use application::request_validation::{
-    create_compaction_threshold_override, enforce_trusted_base_url, model_options,
-    nonblank_request_string, parse_prospective_model_config, request_configuration_error,
-    request_configuration_error_from, sandbox_options, sandbox_requested,
-    validate_steering_instruction, validated_compaction_threshold,
+    create_compaction_threshold_override, model_options, nonblank_request_string,
+    parse_prospective_model_config, request_configuration_error, request_configuration_error_from,
+    sandbox_options, sandbox_requested, validate_steering_instruction,
+    validated_compaction_threshold,
 };
 
 const DEFAULT_REPLAY_LIMIT: usize = 256;

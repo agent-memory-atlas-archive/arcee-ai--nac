@@ -1,5 +1,90 @@
 use super::*;
 
+#[tokio::test]
+async fn saved_configurations_accept_public_https_across_create_update_and_resolve() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("saved_custom_public_https");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, None);
+    let manager = test_manager(&root);
+
+    let created = manager
+        .model_configurations()
+        .create(
+            application::model_configurations::CreateModelConfiguration {
+                name: "Custom gateway".to_string(),
+                backend: BackendKind::OpenAiResponses,
+                model: "custom-primary-model".to_string(),
+                base_url: Some("https://gateway.noncanonical.example/v1".to_string()),
+                api_key: Some("saved-custom-key".to_string()),
+                reasoning_effort: None,
+                extra_headers: None,
+                orchestrator_compaction_threshold: None,
+                initial_prompt: None,
+                light_model: Some(LightModelSettings {
+                    model: "custom-light-model".to_string(),
+                    backend: Some(BackendKind::OpenAiResponses),
+                    base_url: Some("https://light.noncanonical.example/v1".to_string()),
+                    api_key_env: None,
+                    reasoning_effort: None,
+                }),
+            },
+        )
+        .expect("saved custom endpoint should need no config.toml host entry");
+    assert_eq!(created.base_url, "https://gateway.noncanonical.example/v1");
+    assert_eq!(
+        created
+            .light_model
+            .as_ref()
+            .and_then(|light| light.base_url.as_deref()),
+        Some("https://light.noncanonical.example/v1")
+    );
+
+    let updated = manager
+        .model_configurations()
+        .update(
+            &created.config_id,
+            application::model_configurations::UpdateModelConfiguration {
+                name: application::Field::Unchanged,
+                backend: application::Field::Unchanged,
+                model: application::Field::Unchanged,
+                base_url: application::Field::Set(
+                    "https://updated.noncanonical.example/v2".to_string(),
+                ),
+                api_key: application::Field::Unchanged,
+                reasoning_effort: application::Field::Unchanged,
+                extra_headers: application::Field::Unchanged,
+                orchestrator_compaction_threshold: application::Field::Unchanged,
+                initial_prompt: application::Field::Unchanged,
+                light_model: application::Field::Set(LightModelSettings {
+                    model: "custom-light-model-v2".to_string(),
+                    backend: Some(BackendKind::OpenAiResponses),
+                    base_url: Some("https://updated-light.noncanonical.example/v2".to_string()),
+                    api_key_env: None,
+                    reasoning_effort: None,
+                }),
+            },
+        )
+        .expect("saved custom endpoint update should need no host entry");
+    assert_eq!(updated.base_url, "https://updated.noncanonical.example/v2");
+
+    let credential = updated.api_key_env.as_deref().unwrap();
+    nac_core::model::remove_api_key(credential).unwrap();
+    let error = match manager
+        .model_configurations()
+        .resolve_saved(&updated.config_id)
+        .await
+    {
+        Ok(_) => panic!("the removed key should fail after the custom URL is accepted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains(credential), "{error}");
+    assert!(!error.to_string().contains("approved host"), "{error}");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn launch_defaults_reload_config_after_manager_boot() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();

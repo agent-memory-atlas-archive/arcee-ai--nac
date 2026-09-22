@@ -6,13 +6,13 @@ use nac_core::{
     model::{
         list_managed_provider_models, list_provider_models, provider_default_base_url,
         provider_for_model, provider_uses_api_key, remove_api_key, resolve_backend_api_key,
-        resolve_model_base_url, store_api_key, validate_caller_supplied_base_url, BackendKind,
-        ManagedAuthProvider, ProviderModel, ReasoningEffort,
+        resolve_model_base_url, store_api_key, BackendKind, ManagedAuthProvider, ProviderModel,
+        ReasoningEffort,
     },
     model_configurations::{
         self, ModelConfigurationRecord, ModelConfigurationStoreError, NewModelConfiguration,
     },
-    runtime::{CredentialDestinationPolicy, NacConfig},
+    runtime::NacConfig,
 };
 
 use super::Field;
@@ -133,13 +133,11 @@ impl<'a> ModelConfigurationApplication<'a> {
         let id = uuid::Uuid::new_v4();
         let credential_name =
             expects_key.then(|| format!("{GENERATED_CREDENTIAL_PREFIX}{}", id.simple()));
-        let policy = self.credential_policy()?;
         let light_model = command
             .light_model
             .map(|light| {
                 light_model::normalize(
                     light,
-                    &policy,
                     credential_name
                         .as_deref()
                         .map(|name| light_model::InheritedCredential {
@@ -273,7 +271,7 @@ impl<'a> ModelConfigurationApplication<'a> {
             initial_prompt: optional_value(command.initial_prompt, existing.initial_prompt.clone()),
             light_model: match command.light_model {
                 Field::Set(light) => Some(
-                    light_model::normalize(light, &self.credential_policy()?, Some(inherited))
+                    light_model::normalize(light, Some(inherited))
                         .map_err(|error| invalid(error.to_string()))?,
                 ),
                 Field::Clear => None,
@@ -453,13 +451,6 @@ impl<'a> ModelConfigurationApplication<'a> {
         Ok(())
     }
 
-    fn credential_policy(
-        &self,
-    ) -> Result<CredentialDestinationPolicy, ModelConfigurationApplicationError> {
-        NacConfig::load_credential_destination_policy(&self.manager.inner.root_cwd)
-            .map_err(ModelConfigurationApplicationError::Internal)
-    }
-
     fn settle_base_url(
         &self,
         backend: BackendKind,
@@ -475,14 +466,7 @@ impl<'a> ModelConfigurationApplication<'a> {
                     "backend '{backend}' has no default base URL; supply one"
                 ))
             })?;
-        let base_url = resolve_model_base_url(backend, Some(base_url))
-            .map_err(|error| invalid(error.to_string()))?;
-        let policy = self.credential_policy()?;
-        if policy.configured_base_url.as_deref() != Some(base_url.as_str()) {
-            validate_caller_supplied_base_url(backend, &base_url, &policy.trusted_hosts)
-                .map_err(|error| invalid(error.to_string()))?;
-        }
-        Ok(base_url)
+        resolve_model_base_url(backend, Some(base_url)).map_err(|error| invalid(error.to_string()))
     }
 }
 

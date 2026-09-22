@@ -145,9 +145,9 @@ fn truncated_body(body: &str) -> String {
 
 /// Ask a provider which models the key may use.
 ///
-/// The caller is responsible for having approved `base_url` as a credential
-/// destination; this function only checks that the URL is a well-formed https
-/// endpoint before attaching the key.
+/// The base URL is validated as an HTTP(S) model endpoint before the key is
+/// attached. Public destinations require HTTPS; local and private addresses
+/// retain their existing plaintext exception.
 pub async fn list_provider_models(
     backend: BackendKind,
     base_url: &str,

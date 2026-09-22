@@ -69,10 +69,7 @@ pub use arcee_bootstrap::{
     validate_managed_arcee_authorization_for_issuer, ManagedArceeBootstrapOutcome,
     MANAGED_ARCEE_BOOTSTRAP_PATH,
 };
-pub use backend::{
-    validate_backend_api_key_env, validate_caller_supplied_base_url,
-    validate_model_reasoning_effort,
-};
+pub use backend::{validate_backend_api_key_env, validate_model_reasoning_effort};
 pub(crate) use catalog::resolve as resolve_model_metadata;
 pub use catalog::{
     api_listing, api_listing_for_invocation, provider_for_model, spawn_anthropic_model_refresh,

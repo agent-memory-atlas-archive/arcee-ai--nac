@@ -323,6 +323,51 @@ fn managed_backends_materialize_only_absent_base_urls() {
 }
 
 #[test]
+fn custom_api_key_endpoints_accept_public_https_without_weakening_url_hygiene() {
+    for backend in [
+        BackendKind::OpenAiResponses,
+        BackendKind::AnthropicMessages,
+        BackendKind::DeepSeekChat,
+        BackendKind::FireworksChat,
+        BackendKind::TogetherChat,
+    ] {
+        let base_url = "https://gateway.noncanonical.example/v1";
+        assert_eq!(
+            resolve_model_base_url(backend, Some(base_url.to_string())).unwrap(),
+            base_url,
+            "{backend}"
+        );
+    }
+
+    for (base_url, expected) in [
+        ("relative/path", "not a valid absolute URL"),
+        (
+            "ftp://gateway.example/v1",
+            "absolute http(s) URL with a host",
+        ),
+        (
+            "https://user:secret@gateway.example/v1",
+            "must not embed userinfo",
+        ),
+        ("http://gateway.example/v1", "requires HTTPS"),
+    ] {
+        let error =
+            resolve_model_base_url(BackendKind::OpenAiResponses, Some(base_url.to_string()))
+                .expect_err("unsafe custom endpoint must remain rejected");
+        assert!(error.to_string().contains(expected), "{error:#}");
+    }
+
+    assert_eq!(
+        resolve_model_base_url(
+            BackendKind::OpenAiResponses,
+            Some("http://127.0.0.1:8080/v1".to_string()),
+        )
+        .unwrap(),
+        "http://127.0.0.1:8080/v1"
+    );
+}
+
+#[test]
 fn effective_settings_reject_unsupported_reasoning_before_client_or_persistence() {
     let all = [
         ReasoningEffort::None,
