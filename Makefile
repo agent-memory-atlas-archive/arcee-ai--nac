@@ -1,4 +1,4 @@
-.PHONY: all setup build dev demo release install ci test test-rust test-web test-release test-stable-binary test-source-size generate-api-contract test-api-contract test-assets test-e2e test-e2e-remote test-durability test-managed-image-contract managed-image test-managed-image check lint fix format-check fmt crate-check crate-test crate-build clean help
+.PHONY: all setup build dev run install-dev release install ci test test-rust test-web test-release test-stable-binary test-source-workflow test-source-size generate-api-contract test-api-contract test-assets test-e2e test-e2e-remote test-durability test-managed-image-contract managed-image test-managed-image check lint fix format-check fmt crate-check crate-test crate-build clean help
 
 CARGO ?= cargo
 PKG := nac-server
@@ -8,17 +8,14 @@ RELEASE_TEST_DIR := .github/scripts
 MANAGED_IMAGE ?= nac-managed:local
 
 DEV_BIND ?= 127.0.0.1:3210
-DEV_URL ?= http://$(DEV_BIND)/
 DEV_STORE_PATH ?=
-DEMO_STORE_PATH ?= $(HOME)/.config/nac/dev.db
+VITE_HOST ?= 127.0.0.1
+VITE_PORT ?= 5173
+DEV_OPEN ?= 1
+DEV_INSTALL_DIR ?= $(HOME)/.local/bin
+DEV_BIN_NAME ?= nac-web-dev
 
-ifeq ($(shell uname -s),Darwin)
-BROWSER_OPEN ?= open
-else
-BROWSER_OPEN ?= xdg-open
-endif
-
-export DEV_BIND DEV_URL DEV_STORE_PATH BROWSER_OPEN
+export DEV_BIND DEV_STORE_PATH VITE_HOST VITE_PORT DEV_OPEN
 
 
 # Matches the location used by scripts/install.sh ($(INSTALL_ROOT)/bin).
@@ -42,47 +39,24 @@ setup:
 	npm --prefix $(WEB_DIR) ci
 	npm --prefix $(WEB_DIR) exec -- playwright install chromium
 
-## Build the nac-web binary (debug)
+## Rebuild the frontend and complete production-embedded application (debug)
 build:
-	$(CARGO) build --locked -p $(PKG) --bin $(BIN)
-
-## Build and run nac-web, then open it in the default browser
-dev:
-	@command -v curl >/dev/null 2>&1 || { \
-			printf '%s\n' 'error: make dev requires curl'; \
-			exit 1; \
-		}; \
-		command -v "$$BROWSER_OPEN" >/dev/null 2>&1 || { \
-			printf 'error: make dev requires %s\n' "$$BROWSER_OPEN"; \
-			exit 1; \
-		}; \
-		if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 -- "$${DEV_URL}health" >/dev/null 2>&1; then \
-			printf 'error: NAC is already responding at %s\n' "$$DEV_URL"; \
-			exit 1; \
-		fi; \
-		if [ -n "$$DEV_STORE_PATH" ]; then \
-			set -- --store-path "$$DEV_STORE_PATH"; \
-		else \
-			set --; \
-		fi; \
-		$(CARGO) run --locked -p $(PKG) --bin $(BIN) -- --bind "$$DEV_BIND" "$$@" & \
-		server_pid=$$!; \
-		trap 'kill "$$server_pid" 2>/dev/null || true' EXIT; \
-		trap 'exit 130' INT TERM; \
-		until curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 -- "$${DEV_URL}health" >/dev/null 2>&1; do \
-			if ! kill -0 "$$server_pid" 2>/dev/null; then \
-				wait "$$server_pid"; \
-				exit $$?; \
-			fi; \
-			sleep 0.1; \
-		done; \
-		"$$BROWSER_OPEN" "$$DEV_URL" || exit $$?; \
-		wait "$$server_pid"
-
-## Rebuild the production bundle, then run with an isolated development store
-demo:
 	npm --prefix $(WEB_DIR) run build
-	$(MAKE) dev DEV_STORE_PATH="$(DEMO_STORE_PATH)"
+	NAC_BUILD_TRACK=dev $(CARGO) build --locked -p $(PKG) --bin $(BIN)
+
+## Run the Rust API and Vite/HMR frontend with supervised cleanup
+dev:
+	NAC_BUILD_TRACK=dev CARGO="$(CARGO)" ./start_dev.sh
+
+## Build and run the production-equivalent embedded application
+run: build
+	./target/debug/$(BIN)
+
+## Build and install this dev source under a deliberate non-stable name
+install-dev:
+	npm --prefix $(WEB_DIR) run build
+	NAC_BUILD_TRACK=dev $(CARGO) build --release --locked -p $(PKG) --bin $(BIN)
+	./scripts/install-dev.sh "$(CURDIR)/target/release/$(BIN)" "$(DEV_INSTALL_DIR)" "$(DEV_BIN_NAME)"
 
 ## Build the nac-web binary (release)
 release:
@@ -96,7 +70,7 @@ install:
 ci: format-check lint test
 
 ## Run workspace Rust tests, frontend tests, source-size, and web asset checks
-test: test-source-size test-rust test-web test-release test-assets test-managed-image-contract
+test: test-source-size test-source-workflow test-rust test-web test-release test-assets test-managed-image-contract
 
 test-rust:
 	$(CARGO) test --workspace --locked
@@ -117,6 +91,10 @@ test-stable-binary:
 	source_revision="$$(git rev-parse HEAD)"; \
 	NAC_BUILD_TRACK=stable NAC_BUILD_ID="v$$version" NAC_SOURCE_REVISION="$$source_revision" \
 		$(CARGO) test --locked -p nac-server --test stable_binary_contract -- --nocapture
+
+## Verify source command, installer, and dual-process supervision contracts
+test-source-workflow:
+	bash scripts/test-source-workflow.sh
 
 ## Keep tracked human-authored files within the agent-context budget
 test-source-size:
@@ -244,9 +222,10 @@ help:
 		'' \
 		'Targets:' \
 		'  setup        Install locked Rust/web dependencies and Playwright Chromium' \
-		'  build        Build nac-web (debug) [default]' \
-		'  dev          Build and run nac-web, then open it in the default browser' \
-		'  demo         Rebuild production assets and run with ~/.config/nac/dev.db' \
+		'  build        Rebuild the frontend and production-embedded app [default]' \
+		'  dev          Run the Rust API plus Vite/HMR frontend with supervised cleanup' \
+		'  run          Build and run the production-equivalent embedded app' \
+		'  install-dev  Install this dev source as $$DEV_INSTALL_DIR/$$DEV_BIN_NAME' \
 		'  release      Build nac-web (release)' \
 		'  install      Install nac-web into $$INSTALL_ROOT/bin (~/.local)' \
 		'  ci           Run formatting, lint, and test gates' \
@@ -254,6 +233,7 @@ help:
 		'  test-rust    Run cargo test --workspace --locked' \
 		'  test-web     Run frontend unit and component tests' \
 		'  test-release Validate stable release preparation policy' \
+		'  test-source-workflow Verify source commands, install safety, and supervision' \
 		'  test-source-size Enforce the 2,000-line human-source ceiling' \
 		'  test-assets  Lint, typecheck and rebuild the web app' \
 		'  test-e2e     Run production-embedded Playwright tests' \

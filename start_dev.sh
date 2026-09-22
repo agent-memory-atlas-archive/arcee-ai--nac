@@ -14,8 +14,11 @@
 #
 # Environment:
 #   NAC_BIND      address nac-web binds to (default 127.0.0.1:3210)
+#   DEV_STORE_PATH optional authoritative store-path override
+#   VITE_HOST     Vite host (default 127.0.0.1)
 #   VITE_PORT     port for the Vite dev server (default 5173)
 #   NAC_PROFILE   cargo profile for nac-web: debug (default) or release
+#   DEV_OPEN      1 to open the Vite URL, 0 to leave it terminal-only
 
 set -euo pipefail
 
@@ -24,7 +27,9 @@ cd "$ROOT"
 
 BIND="${NAC_BIND:-127.0.0.1:3210}"
 VITE_PORT="${VITE_PORT:-5173}"
+VITE_HOST="${VITE_HOST:-127.0.0.1}"
 PROFILE="${NAC_PROFILE:-debug}"
+DEV_OPEN="${DEV_OPEN:-1}"
 WEB_DIR="crates/nac-server/web"
 
 for tool in cargo npm curl; do
@@ -47,76 +52,141 @@ case "$PROFILE" in
     ;;
 esac
 
-DEPENDENCY_STAMP_DIR="$WEB_DIR/node_modules/.nac-dependencies"
-DEPENDENCIES_CURRENT=true
-for file in package.json package-lock.json; do
-  if [[ -f "$WEB_DIR/$file" ]]; then
-    cmp -s "$WEB_DIR/$file" "$DEPENDENCY_STAMP_DIR/$file" || DEPENDENCIES_CURRENT=false
-  elif [[ -f "$DEPENDENCY_STAMP_DIR/$file" ]]; then
-    DEPENDENCIES_CURRENT=false
-  fi
-done
-
-if [[ "$DEPENDENCIES_CURRENT" != true ]]; then
-  echo "==> installing frontend dependencies"
-  if [[ -f "$WEB_DIR/package-lock.json" ]]; then
-    npm --prefix "$WEB_DIR" ci
-  else
-    npm --prefix "$WEB_DIR" install
-  fi
-
-  mkdir -p "$DEPENDENCY_STAMP_DIR"
-  cp "$WEB_DIR/package.json" "$DEPENDENCY_STAMP_DIR/package.json"
-  if [[ -f "$WEB_DIR/package-lock.json" ]]; then
-    cp "$WEB_DIR/package-lock.json" "$DEPENDENCY_STAMP_DIR/package-lock.json"
-  else
-    rm -f "$DEPENDENCY_STAMP_DIR/package-lock.json"
-  fi
-fi
-
 echo "==> building nac-web ($PROFILE)"
 # The `${arr[@]+...}` guard keeps an empty array from tripping `set -u` on the
 # bash 3.2 that ships with macOS.
-cargo build ${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"} \
+"${CARGO:-cargo}" build --locked ${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"} \
   -p nac-server --bin nac-web
 
 BACKEND_PID=""
 VITE_PID=""
-cleanup() {
-  echo
-  for pid in "$VITE_PID" "$BACKEND_PID"; do
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    fi
-  done
-}
-trap cleanup EXIT INT TERM
+cleanup_started=false
 
-echo "==> starting nac-web on http://$BIND"
+job_is_running() {
+  local wanted="$1"
+  local running
+  for running in $(jobs -pr); do
+    [[ "$running" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+terminate_group() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  if job_is_running "$pid"; then
+    kill -TERM "-$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      job_is_running "$pid" || break
+      sleep 0.1
+    done
+    if job_is_running "$pid"; then
+      kill -KILL "-$pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
+cleanup() {
+  [[ "$cleanup_started" == false ]] || return 0
+  cleanup_started=true
+  terminate_group "$VITE_PID"
+  terminate_group "$BACKEND_PID"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Non-interactive Bash otherwise keeps every background child in this script's
+# process group. Monitor mode gives each child its own group, so cleanup reaches
+# cargo/npm descendants on both supported developer platforms.
+set -m
+
+API_URL="http://$BIND"
+APP_URL="http://$VITE_HOST:$VITE_PORT"
+if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 -- "$API_URL/health" >/dev/null 2>&1; then
+  echo "start_dev.sh: NAC is already responding at $API_URL" >&2
+  exit 1
+fi
+if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 -- "$APP_URL/" >/dev/null 2>&1; then
+  echo "start_dev.sh: another frontend is already responding at $APP_URL" >&2
+  exit 1
+fi
+
+echo "==> Rust API: $API_URL"
 # The browser should open on the Vite origin below, not the API bind.
 # `-y` skips the project-folder prompt so a backgrounded API never blocks.
-"target/$PROFILE/nac-web" --bind "$BIND" --no-open -y &
+SERVER_ARGS=(--bind "$BIND" --no-open -y)
+if [[ -n "${DEV_STORE_PATH:-}" ]]; then
+  SERVER_ARGS+=(--store-path "$DEV_STORE_PATH")
+fi
+"${NAC_DEV_SERVER_BIN:-target/$PROFILE/nac-web}" "${SERVER_ARGS[@]}" &
 BACKEND_PID=$!
 
 # Vite would otherwise start proxying to a socket that is not listening yet and
 # the first requests would fail with a connection error.
-for _ in $(seq 1 50); do
-  if curl -sf -o /dev/null "http://$BIND/health"; then
+backend_ready=false
+for _ in $(seq 1 150); do
+  if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 -- "$API_URL/health" >/dev/null 2>&1; then
+    backend_ready=true
     break
   fi
-  if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+  if ! job_is_running "$BACKEND_PID"; then
     echo "start_dev.sh: nac-web exited during startup" >&2
-    exit 1
+    if wait "$BACKEND_PID"; then exit 1; else exit $?; fi
   fi
   sleep 0.2
 done
+if [[ "$backend_ready" != true ]]; then
+  echo "start_dev.sh: timed out waiting for $API_URL/health" >&2
+  exit 1
+fi
 
-echo "==> vite dev server on http://localhost:$VITE_PORT"
+echo "==> Vite/HMR app: $APP_URL"
 # Vite runs in the background so that a signal reaching this script is handled
 # right away instead of after the foreground child returns. `--open` opens the
 # app origin (not the API) once Vite is ready — same idea as Storybook.
-NAC_API_URL="http://$BIND" \
-  npm --prefix "$WEB_DIR" run dev -- --port "$VITE_PORT" --open &
+VITE_ARGS=(--host "$VITE_HOST" --port "$VITE_PORT")
+if [[ "$DEV_OPEN" == 1 ]]; then
+  VITE_ARGS+=(--open)
+elif [[ "$DEV_OPEN" != 0 ]]; then
+  echo "start_dev.sh: DEV_OPEN must be 0 or 1, got '$DEV_OPEN'" >&2
+  exit 2
+fi
+NAC_API_URL="$API_URL" \
+  npm --prefix "$WEB_DIR" run dev -- "${VITE_ARGS[@]}" &
 VITE_PID=$!
-wait "$VITE_PID" || true
+
+frontend_ready=false
+for _ in $(seq 1 150); do
+  if curl -fsS --noproxy '*' --connect-timeout 1 --max-time 2 -- "$APP_URL/" >/dev/null 2>&1; then
+    frontend_ready=true
+    break
+  fi
+  if ! job_is_running "$BACKEND_PID"; then
+    echo "start_dev.sh: nac-web exited while Vite was starting" >&2
+    if wait "$BACKEND_PID"; then exit 1; else exit $?; fi
+  fi
+  if ! job_is_running "$VITE_PID"; then
+    echo "start_dev.sh: Vite exited during startup" >&2
+    if wait "$VITE_PID"; then exit 1; else exit $?; fi
+  fi
+  sleep 0.2
+done
+if [[ "$frontend_ready" != true ]]; then
+  echo "start_dev.sh: timed out waiting for $APP_URL/" >&2
+  exit 1
+fi
+
+echo "==> development stack ready; press Ctrl-C to stop both process trees"
+while true; do
+  if ! job_is_running "$BACKEND_PID"; then
+    echo "start_dev.sh: nac-web exited; stopping Vite" >&2
+    if wait "$BACKEND_PID"; then exit 1; else exit $?; fi
+  fi
+  if ! job_is_running "$VITE_PID"; then
+    echo "start_dev.sh: Vite exited; stopping nac-web" >&2
+    if wait "$VITE_PID"; then exit 1; else exit $?; fi
+  fi
+  sleep 0.1
+done

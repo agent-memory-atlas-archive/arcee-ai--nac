@@ -90,11 +90,40 @@ curl -fsSL https://raw.githubusercontent.com/arcee-ai/nac/main/scripts/uninstall
 
 Pull requests are welcome. A CLA-signing bot checks every PR against arcee-ai's [CLA](https://github.com/arcee-ai/mergekit/blob/main/CLA.md); comment `I have read the CLA Document and I hereby sign the CLA` on your PR to sign it (or `recheck` to re-run the check).
 
-For production-equivalent local development, run `make demo`. It rebuilds the
-frontend bundle, compiles the real `nac-web` binary with those embedded assets,
-and opens the dashboard; use Ctrl-C and rerun it after source changes. The
-existing `make dev` target remains available when the committed bundle is
-already current.
+The supported source workflow starts with one dependency setup per fresh
+worktree:
+
+```sh
+make setup
+make dev
+```
+
+`make dev` runs the Rust API at `http://127.0.0.1:3210` and the React app at
+`http://127.0.0.1:5173`, with Vite HMR and API proxying. Both process trees are
+supervised together; Ctrl-C or either process failing stops the other. Use
+`make build` to rebuild the committed frontend bundle and compile the complete
+production-embedded debug application, then `make run` to build and run that
+production-equivalent application from the current checkout.
+
+For day-to-day use without replacing a stable installation, install the source
+build under its development name:
+
+```sh
+make install-dev
+# defaults to $HOME/.local/bin/nac-web-dev
+
+make install-dev DEV_INSTALL_DIR="$HOME/bin" DEV_BIN_NAME="nac-my-branch"
+```
+
+Source builds have the `dev` build track and report the exact source revision.
+Without an override they use `dev.db` under `NAC_HOME` (or the normal NAC
+configuration directory), isolated from `beta.db` and `stable.db`. Set
+`NAC_HOME=/path/to/branch-state` for a fully separate development home, or pass
+`DEV_STORE_PATH=/path/to/branch.db` to `make dev` and `--store-path` to the
+installed executable. Configuration-level storage overrides remain
+authoritative too. Database migrations are forward-only: when testing revisions
+that may move backward across an incompatible schema, use a disposable
+per-worktree or per-branch store rather than a shared development database.
 
 The local verification lanes are `make test-web` for frontend unit/component
 tests, `make test-e2e` for isolated real-browser tests against the embedded
