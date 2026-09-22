@@ -609,7 +609,7 @@ async fn create_reports_the_missing_light_model_credential() {
 }
 
 #[tokio::test]
-async fn direct_preserves_an_unavailable_light_model_without_resolving_it() {
+async fn direct_validates_light_url_without_resolving_unused_credentials() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("direct_unused_light_credential");
     let nac_home = root.join("nac-home");
@@ -620,10 +620,33 @@ async fn direct_preserves_an_unavailable_light_model_without_resolving_it() {
     let unavailable_light = LightModelSettings {
         model: "claude-sonnet-4-6".to_string(),
         backend: Some(BackendKind::AnthropicMessages),
-        base_url: Some("https://api.anthropic.com".to_string()),
+        base_url: Some("https://light.noncanonical.example/v1".to_string()),
         api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
         reasoning_effort: None,
     };
+    let mut unsafe_light = unavailable_light.clone();
+    unsafe_light.base_url = Some("http://light.public.example/v1".to_string());
+    let error = manager
+        .create_session(CreateSessionRequest {
+            behavior: sessions::SessionBehavior::Direct,
+            model: RequestField::Value("gpt-5.2".to_string()),
+            backend: RequestField::Value("openai-responses".to_string()),
+            api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
+            light_model: RequestField::Value(unsafe_light),
+            ..CreateSessionRequest::default()
+        })
+        .await
+        .expect_err("plain direct must reject an unsafe unused light endpoint");
+    let response = ApiError::from(error);
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert!(response.message.contains("requires HTTPS"), "{response:?}");
+    assert!(manager
+        .session_catalog()
+        .list(false)
+        .await
+        .unwrap()
+        .is_empty());
+
     let created = manager
         .create_session(CreateSessionRequest {
             behavior: sessions::SessionBehavior::Direct,
@@ -636,6 +659,31 @@ async fn direct_preserves_an_unavailable_light_model_without_resolving_it() {
         .await
         .expect("plain direct must not resolve its unused light model");
     let session_id = created.metadata.session_id.unwrap();
+    assert_eq!(
+        sessions::load_session(&store_path, &session_id)
+            .unwrap()
+            .light_model,
+        Some(unavailable_light.clone())
+    );
+
+    let mut unsafe_light = unavailable_light.clone();
+    unsafe_light.base_url = Some("https://user:secret@light.example/v1".to_string());
+    let error = manager
+        .update_session_config(
+            &session_id,
+            UpdateConfigRequest {
+                light_model: RequestField::Value(unsafe_light),
+                ..UpdateConfigRequest::default()
+            },
+        )
+        .await
+        .expect_err("plain direct PATCH must reject userinfo in an unused light endpoint");
+    let response = ApiError::from(error);
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert!(
+        response.message.contains("must not embed userinfo"),
+        "{response:?}"
+    );
     assert_eq!(
         sessions::load_session(&store_path, &session_id)
             .unwrap()

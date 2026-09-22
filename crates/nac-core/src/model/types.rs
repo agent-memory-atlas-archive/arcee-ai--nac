@@ -207,7 +207,15 @@ pub fn resolve_model_base_url(backend: BackendKind, base_url: Option<String>) ->
         .or_else(|| catalog::default_base_url(backend))
         .or_else(|| managed_backend_base_url(backend).map(str::to_string));
     let base_url = required_nonblank_setting(base_url, "base_url")?;
-    let parsed = Url::parse(&base_url).map_err(|error| {
+    validate_model_base_url(&base_url)?;
+    Ok(base_url)
+}
+
+/// Validate the credential-independent hygiene shared by every explicit model
+/// endpoint. This does not resolve defaults, credentials, or provider-specific
+/// origin binding.
+pub fn validate_model_base_url(base_url: &str) -> Result<()> {
+    let parsed = Url::parse(base_url).map_err(|error| {
         model_configuration_error(format!(
             "invalid model configuration: base_url '{base_url}' is not a valid absolute URL: {error}"
         ))
@@ -232,7 +240,7 @@ pub fn resolve_model_base_url(backend: BackendKind, base_url: Option<String>) ->
             "invalid model configuration: base_url '{base_url}' requires HTTPS; plaintext HTTP is accepted only for loopback and private-network hosts"
         )));
     }
-    Ok(base_url)
+    Ok(())
 }
 
 impl EffectiveModelSettings {

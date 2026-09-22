@@ -1,7 +1,7 @@
 use anyhow::Result;
 use nac_core::{
     light_model::LightModelSettings,
-    model::{provider_for_model, BackendKind},
+    model::{provider_for_model, validate_model_base_url, BackendKind},
 };
 
 use crate::nonblank_request_string;
@@ -21,12 +21,16 @@ pub(crate) fn normalize(
     light: LightModelSettings,
     inherited: Option<InheritedCredential<'_>>,
 ) -> Result<LightModelSettings> {
+    let base_url = light
+        .base_url
+        .map(|value| nonblank_request_string(value, "light_model.base_url"))
+        .transpose()?;
+    if let Some(base_url) = base_url.as_deref() {
+        validate_model_base_url(base_url)?;
+    }
     let mut light = LightModelSettings {
         model: nonblank_request_string(light.model, "light_model.model")?,
-        base_url: light
-            .base_url
-            .map(|value| nonblank_request_string(value, "light_model.base_url"))
-            .transpose()?,
+        base_url,
         ..light
     };
     if let Some(credential) = inherited {
