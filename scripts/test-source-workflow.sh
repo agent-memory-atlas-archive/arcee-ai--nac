@@ -67,6 +67,7 @@ EOF
 cat >"$TMP/backend" <<'EOF'
 #!/bin/sh
 if [ "${FAKE_BACKEND_FAIL:-0}" = 1 ]; then exit 17; fi
+printf '%s\n' "$*" >"${FAKE_BACKEND_ARGS:?}"
 sh -c 'trap "exit 0" TERM INT; while :; do sleep 1; done' &
 printf '%s\n' "$!" >"${FAKE_BACKEND_DESCENDANT:?}"
 trap 'exit 0' TERM INT
@@ -79,9 +80,10 @@ run_supervisor() {
   local curl_count="$TMP/$label-curl-count"
   FAKE_CURL_COUNT_FILE="$curl_count" \
   FAKE_BACKEND_DESCENDANT="$TMP/$label-backend-child" \
+  FAKE_BACKEND_ARGS="$TMP/$label-backend-args" \
   FAKE_VITE_DESCENDANT="$TMP/$label-vite-child" \
   NAC_DEV_SERVER_BIN="$TMP/backend" \
-  DEV_OPEN=0 PATH="$fake_bin:$PATH" \
+  DEV_BIND=127.0.0.1:43210 DEV_OPEN=0 PATH="$fake_bin:$PATH" \
     "$ROOT/start_dev.sh" >"$TMP/$label.log" 2>&1 &
   SUPERVISOR_PID=$!
 }
@@ -93,6 +95,7 @@ for _ in $(seq 1 100); do
   sleep 0.05
 done
 [[ -f "$TMP/interrupt-backend-child" && -f "$TMP/interrupt-vite-child" ]] || fail "fake descendants were not started"
+grep -F -- '--bind 127.0.0.1:43210' "$TMP/interrupt-backend-args" >/dev/null || fail "DEV_BIND did not reach nac-web"
 backend_child=$(cat "$TMP/interrupt-backend-child")
 vite_child=$(cat "$TMP/interrupt-vite-child")
 kill -TERM "$SUPERVISOR_PID"

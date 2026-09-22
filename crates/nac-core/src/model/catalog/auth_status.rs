@@ -15,12 +15,13 @@ use crate::model::{arcee, backend, chatgpt_codex, BackendKind};
 
 /// The login command hint for a managed provider with no usable stored
 /// credential.
-fn managed_login_hint(provider: BackendKind) -> &'static str {
-    match provider {
-        BackendKind::ArceeAuth => "nac-web arcee-auth login",
-        BackendKind::ChatGptCodexResponses => "nac-web codex-auth login",
+fn managed_login_hint(provider: BackendKind, invocation_name: &str) -> String {
+    let command = match provider {
+        BackendKind::ArceeAuth => "arcee-auth",
+        BackendKind::ChatGptCodexResponses => "codex-auth",
         other => unreachable!("non-managed backend '{other}' has no login hint"),
-    }
+    };
+    format!("{invocation_name} {command} login")
 }
 
 /// Whether a managed provider's stored credential file exists and parses
@@ -47,6 +48,7 @@ fn managed_credential_present(provider: BackendKind) -> bool {
 pub(super) fn provider_auth_status(
     provider: BackendKind,
     credential_env_var: Option<&str>,
+    invocation_name: &str,
 ) -> (AuthStatus, Option<String>) {
     if backend::api_key_backend(provider) {
         if credential_env_var.is_some_and(backend::env_var_is_set) {
@@ -62,7 +64,7 @@ pub(super) fn provider_auth_status(
     } else {
         (
             AuthStatus::NoCredential,
-            Some(managed_login_hint(provider).to_string()),
+            Some(managed_login_hint(provider, invocation_name)),
         )
     }
 }

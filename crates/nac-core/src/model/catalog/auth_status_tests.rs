@@ -117,6 +117,26 @@ fn api_key_providers_without_credentials_hint_the_conventional_var() {
 }
 
 #[test]
+fn managed_login_hints_use_the_callers_exact_invocation_name() {
+    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _env = credential_free_guard("custom-invocation-hints");
+    let listing = super::api_listing_for_invocation("nac-my-branch");
+
+    assert_eq!(
+        provider(&listing, BackendKind::ArceeAuth)
+            .auth_hint
+            .as_deref(),
+        Some("nac-my-branch arcee-auth login")
+    );
+    assert_eq!(
+        provider(&listing, BackendKind::ChatGptCodexResponses)
+            .auth_hint
+            .as_deref(),
+        Some("nac-my-branch codex-auth login")
+    );
+}
+
+#[test]
 fn empty_and_whitespace_env_vars_do_not_count_as_credentials() {
     let _lock = TEST_ENV_LOCK.lock().unwrap();
     let _env = credential_free_guard("status-empty");

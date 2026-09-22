@@ -89,6 +89,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) fn running_invocation_name() -> String {
+    #[cfg(test)]
+    {
+        "nac-web".to_string()
+    }
+    #[cfg(not(test))]
+    {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "nac-web".to_string())
+    }
+}
+
 use anyhow::{anyhow, Context, Result};
 #[cfg(test)]
 use axum::response::sse::{Event, Sse};
@@ -500,11 +518,10 @@ impl SessionManager {
             &config,
             build_identity::store_track(),
         );
-        let worker_executable = options
-            .worker_executable
-            .map(canonicalize_file)
-            .transpose()?
-            .unwrap_or(std::env::current_exe().context("failed to resolve current executable")?);
+        let running_executable =
+            std::env::current_exe().context("failed to resolve current executable")?;
+        let worker_executable =
+            resolve_worker_executable(options.worker_executable, running_executable)?;
 
         // This is deliberately before any managed model, credential, clone,
         // reconciliation, or listener setup. Only an exact controller-authored
@@ -1991,6 +2008,16 @@ fn canonicalize_file(path: PathBuf) -> Result<PathBuf> {
         anyhow::bail!("{} is not a file", resolved.display());
     }
     Ok(resolved)
+}
+
+fn resolve_worker_executable(
+    configured: Option<PathBuf>,
+    running_executable: PathBuf,
+) -> Result<PathBuf> {
+    configured
+        .map(canonicalize_file)
+        .transpose()
+        .map(|configured| configured.unwrap_or(running_executable))
 }
 
 #[cfg(test)]

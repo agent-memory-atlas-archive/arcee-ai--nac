@@ -1,4 +1,4 @@
-.PHONY: all setup build dev run install-dev release install ci test test-rust test-web test-release test-stable-binary test-source-workflow test-source-size generate-api-contract test-api-contract test-assets test-e2e test-e2e-remote test-durability test-managed-image-contract managed-image test-managed-image check lint fix format-check fmt crate-check crate-test crate-build clean help
+.PHONY: all setup build dev run install-dev release install ci test test-rust test-web test-release test-stable-binary test-source-workflow test-source-binary test-source-size generate-api-contract test-api-contract test-assets test-e2e test-e2e-remote test-durability test-managed-image-contract managed-image test-managed-image check lint fix format-check fmt crate-check crate-test crate-build clean help
 
 CARGO ?= cargo
 PKG := nac-server
@@ -42,11 +42,11 @@ setup:
 ## Rebuild the frontend and complete production-embedded application (debug)
 build:
 	npm --prefix $(WEB_DIR) run build
-	NAC_BUILD_TRACK=dev $(CARGO) build --locked -p $(PKG) --bin $(BIN)
+	$(CARGO) build --locked -p $(PKG) --bin $(BIN)
 
 ## Run the Rust API and Vite/HMR frontend with supervised cleanup
 dev:
-	NAC_BUILD_TRACK=dev CARGO="$(CARGO)" ./start_dev.sh
+	CARGO="$(CARGO)" ./start_dev.sh
 
 ## Build and run the production-equivalent embedded application
 run: build
@@ -55,7 +55,7 @@ run: build
 ## Build and install this dev source under a deliberate non-stable name
 install-dev:
 	npm --prefix $(WEB_DIR) run build
-	NAC_BUILD_TRACK=dev $(CARGO) build --release --locked -p $(PKG) --bin $(BIN)
+	$(CARGO) build --release --locked -p $(PKG) --bin $(BIN)
 	./scripts/install-dev.sh "$(CURDIR)/target/release/$(BIN)" "$(DEV_INSTALL_DIR)" "$(DEV_BIN_NAME)"
 
 ## Build the nac-web binary (release)
@@ -70,7 +70,7 @@ install:
 ci: format-check lint test
 
 ## Run workspace Rust tests, frontend tests, source-size, and web asset checks
-test: test-source-size test-source-workflow test-rust test-web test-release test-assets test-managed-image-contract
+test: test-source-size test-source-workflow test-source-binary test-rust test-web test-release test-assets test-managed-image-contract
 
 test-rust:
 	$(CARGO) test --workspace --locked
@@ -95,6 +95,11 @@ test-stable-binary:
 ## Verify source command, installer, and dual-process supervision contracts
 test-source-workflow:
 	bash scripts/test-source-workflow.sh
+
+## Exercise the real unset-track source binary under a custom installed name
+test-source-binary:
+	env -u NAC_BUILD_TRACK -u NAC_BUILD_ID -u NAC_SOURCE_REVISION \
+		$(CARGO) test --locked -p nac-server --test source_binary_contract -- --nocapture
 
 ## Keep tracked human-authored files within the agent-context budget
 test-source-size:
@@ -234,6 +239,7 @@ help:
 		'  test-web     Run frontend unit and component tests' \
 		'  test-release Validate stable release preparation policy' \
 		'  test-source-workflow Verify source commands, install safety, and supervision' \
+		'  test-source-binary Verify unset-track identity, custom name, store, and upgrade guard' \
 		'  test-source-size Enforce the 2,000-line human-source ceiling' \
 		'  test-assets  Lint, typecheck and rebuild the web app' \
 		'  test-e2e     Run production-embedded Playwright tests' \

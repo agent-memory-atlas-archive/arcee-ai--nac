@@ -13,7 +13,7 @@
 # open its source. It is absent from the committed build that ./start.sh serves.
 #
 # Environment:
-#   NAC_BIND      address nac-web binds to (default 127.0.0.1:3210)
+#   DEV_BIND      address nac-web binds to (default 127.0.0.1:3210)
 #   DEV_STORE_PATH optional authoritative store-path override
 #   VITE_HOST     Vite host (default 127.0.0.1)
 #   VITE_PORT     port for the Vite dev server (default 5173)
@@ -25,7 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-BIND="${NAC_BIND:-127.0.0.1:3210}"
+BIND="${DEV_BIND:-127.0.0.1:3210}"
 VITE_PORT="${VITE_PORT:-5173}"
 VITE_HOST="${VITE_HOST:-127.0.0.1}"
 PROFILE="${NAC_PROFILE:-debug}"

@@ -444,6 +444,13 @@ fn provider_auth(provider: BackendKind) -> ProviderAuth {
 /// credential variable is set — the same variable session resolution
 /// auto-selects.
 pub fn api_listing() -> ModelListing {
+    api_listing_for_invocation("nac-web")
+}
+
+/// Build the model listing while rendering actionable login hints with the
+/// exact executable name the caller is running. Product and protocol identity
+/// remain `nac-web`; only commands intended for copy/paste are invocation-aware.
+pub fn api_listing_for_invocation(invocation_name: &str) -> ModelListing {
     let catalog = current();
     let providers = catalog
         .providers
@@ -452,6 +459,7 @@ pub fn api_listing() -> ModelListing {
             let (auth_status, auth_hint) = auth_status::provider_auth_status(
                 *provider,
                 provider_catalog.credential_env_var.as_deref(),
+                invocation_name,
             );
             let connection = if auth_status == AuthStatus::Ready {
                 managed_backend_base_url(*provider)
