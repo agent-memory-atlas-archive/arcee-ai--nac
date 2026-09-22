@@ -1485,7 +1485,11 @@ mod backend_tests {
     use super::*;
 
     #[test]
-    fn stored_backend_parser_accepts_explicit_arcee_modes() {
+    fn stored_backend_parser_accepts_current_explicit_backends() {
+        assert_eq!(
+            parse_backend(Some("openai-chat-completions".to_string())).unwrap(),
+            BackendKind::OpenAiChatCompletions
+        );
         assert_eq!(
             parse_backend(Some("arcee-auth".to_string())).unwrap(),
             BackendKind::ArceeAuth

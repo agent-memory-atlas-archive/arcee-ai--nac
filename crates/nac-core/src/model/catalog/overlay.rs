@@ -30,7 +30,7 @@ use super::data::{GeneratedModel, GeneratedProvider};
 use super::{CatalogWarning, ModelCatalog, ModelSource, ThinkingLevelMap};
 use crate::model::BackendKind;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,11 +55,12 @@ pub(super) const OVERLAY_SCHEMA_VERSION: u32 = 1;
 /// models.dev provider id → nac provider; mirrors nac-catalog-gen's
 /// `PROVIDER_MAP` (arcee and chatgpt-codex-responses are not models.dev
 /// providers; their catalog data stays hand-written in the seed).
-const MODELS_DEV_PROVIDERS: [(&str, BackendKind); 5] = [
+const MODELS_DEV_PROVIDERS: [(&str, BackendKind); 6] = [
     ("deepseek", BackendKind::DeepSeekChat),
     ("fireworks-ai", BackendKind::FireworksChat),
     ("togetherai", BackendKind::TogetherChat),
     ("openai", BackendKind::OpenAiResponses),
+    ("openai", BackendKind::OpenAiChatCompletions),
     ("anthropic", BackendKind::AnthropicMessages),
 ];
 
@@ -492,7 +493,8 @@ struct ModelsDevTierSelector {
 
 /// Map a models.dev `api.json` payload into overlay provider records.
 /// Tolerant at every level: the top level parses as generic values, only
-/// nac's five providers are consumed, and per-model failures warn and keep a
+/// nac's five upstream providers are consumed into six backend projections,
+/// and per-model failures warn and keep a
 /// matching known-good embedded entry. Malformed novel IDs are skipped;
 /// missing or explicitly incompatible IDs remain absent so a successful
 /// provider snapshot can retire them. Total payload parse failure is the only
@@ -608,6 +610,8 @@ pub(super) fn map_models_dev(
             },
         );
     }
+    let mut seen_warnings = BTreeSet::new();
+    warnings.retain(|warning| seen_warnings.insert(warning.clone()));
     Ok((providers, warnings, model_count))
 }
 

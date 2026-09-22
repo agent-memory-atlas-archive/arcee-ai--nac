@@ -75,7 +75,9 @@ pub use catalog::{
     api_listing, api_listing_for_invocation, provider_for_model, spawn_anthropic_model_refresh,
     spawn_arcee_model_refresh, spawn_overlay_refresh, AuthStatus, ModelListing, ProviderConnection,
 };
-pub(crate) use catalog::{Compat, CompletionsThinkingFormat, ModelMetadata, ThinkingLevelMap};
+pub(crate) use catalog::{
+    Compat, CompletionsThinkingFormat, CompletionsTokenLimit, ModelMetadata, ThinkingLevelMap,
+};
 pub use providers::{
     list_managed_provider_models, list_provider_models, provider_default_base_url,
     provider_uses_api_key, ProviderModel,

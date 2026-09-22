@@ -202,6 +202,7 @@ fn one_completions_builder_reproduces_every_provider_shape_from_compat() {
         completions_thinking_format: Some(CompletionsThinkingFormat::Arcee),
         completions_reasoning_field: Some("reasoning_content".to_string()),
         completions_temperature: Some(0.0),
+        ..Compat::default()
     };
     let arcee_none = completions_chat_request(
         "deepseek-ai/deepseek-v4-pro",

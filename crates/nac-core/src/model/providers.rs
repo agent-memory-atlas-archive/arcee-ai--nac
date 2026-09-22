@@ -31,7 +31,9 @@ const CODEX_MODEL_INDEX_CLIENT_VERSION: &str = "0.200.0";
 /// API-key backends so an incomplete configuration still fails loudly.
 pub fn provider_default_base_url(backend: BackendKind) -> Option<&'static str> {
     match backend {
-        BackendKind::OpenAiResponses => Some("https://api.openai.com/v1"),
+        BackendKind::OpenAiResponses | BackendKind::OpenAiChatCompletions => {
+            Some("https://api.openai.com/v1")
+        }
         BackendKind::AnthropicMessages => Some("https://api.anthropic.com"),
         BackendKind::DeepSeekChat => Some("https://api.deepseek.com"),
         BackendKind::FireworksChat => Some("https://api.fireworks.ai/inference/v1"),
@@ -70,6 +72,7 @@ fn models_url(backend: BackendKind, base_url: &str) -> Option<String> {
             "{trimmed}/codex/models?client_version={CODEX_MODEL_INDEX_CLIENT_VERSION}"
         )),
         BackendKind::OpenAiResponses
+        | BackendKind::OpenAiChatCompletions
         | BackendKind::DeepSeekChat
         | BackendKind::FireworksChat
         | BackendKind::TogetherChat
@@ -257,8 +260,9 @@ mod tests {
 
     use crate::model::test_http::{ScriptedResponse, ScriptedServer};
 
-    const ALL_BACKENDS: [BackendKind; 8] = [
+    const ALL_BACKENDS: [BackendKind; 9] = [
         BackendKind::OpenAiResponses,
+        BackendKind::OpenAiChatCompletions,
         BackendKind::ChatGptCodexResponses,
         BackendKind::AnthropicMessages,
         BackendKind::DeepSeekChat,
@@ -273,6 +277,7 @@ mod tests {
     fn expects_api_key(backend: BackendKind) -> bool {
         match backend {
             BackendKind::OpenAiResponses
+            | BackendKind::OpenAiChatCompletions
             | BackendKind::AnthropicMessages
             | BackendKind::DeepSeekChat
             | BackendKind::FireworksChat
@@ -320,6 +325,13 @@ mod tests {
         );
         assert_eq!(
             models_url(BackendKind::OpenAiResponses, "https://api.openai.com/v1"),
+            Some("https://api.openai.com/v1/models".to_string())
+        );
+        assert_eq!(
+            models_url(
+                BackendKind::OpenAiChatCompletions,
+                "https://api.openai.com/v1"
+            ),
             Some("https://api.openai.com/v1/models".to_string())
         );
         // A pasted URL often carries a trailing slash; it must not double up.

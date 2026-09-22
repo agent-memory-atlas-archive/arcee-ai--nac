@@ -10,6 +10,8 @@ pub enum BackendKind {
     TogetherChat,
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
+    #[serde(rename = "openai-chat-completions")]
+    OpenAiChatCompletions,
     #[serde(rename = "chatgpt-codex-responses")]
     ChatGptCodexResponses,
     #[serde(rename = "anthropic-messages")]
@@ -19,7 +21,7 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-    pub const SUPPORTED: &'static str = "deepseek-chat, fireworks-chat, together-chat, openai-responses, chatgpt-codex-responses, anthropic-messages, arcee-auth, arcee-api";
+    pub const SUPPORTED: &'static str = "deepseek-chat, fireworks-chat, together-chat, openai-responses, openai-chat-completions, chatgpt-codex-responses, anthropic-messages, arcee-auth, arcee-api";
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -27,6 +29,7 @@ impl BackendKind {
             Self::FireworksChat => "fireworks-chat",
             Self::TogetherChat => "together-chat",
             Self::OpenAiResponses => "openai-responses",
+            Self::OpenAiChatCompletions => "openai-chat-completions",
             Self::ChatGptCodexResponses => "chatgpt-codex-responses",
             Self::AnthropicMessages => "anthropic-messages",
             Self::ArceeAuth => "arcee-auth",
@@ -54,6 +57,7 @@ impl std::str::FromStr for BackendKind {
             "fireworks-chat" => Ok(Self::FireworksChat),
             "together-chat" => Ok(Self::TogetherChat),
             "openai-responses" => Ok(Self::OpenAiResponses),
+            "openai-chat-completions" => Ok(Self::OpenAiChatCompletions),
             "chatgpt-codex-responses" => Ok(Self::ChatGptCodexResponses),
             "anthropic-messages" => Ok(Self::AnthropicMessages),
             "arcee-auth" => Ok(Self::ArceeAuth),
@@ -198,7 +202,7 @@ pub(super) fn allows_plaintext_transport(host: &url::Host<&str>) -> bool {
 /// Materialize and validate the base URL after the effective backend has been
 /// selected. A caller-supplied value is always authoritative (and is never
 /// replaced when invalid); genuine absence falls to the provider's catalog
-/// endpoint default (the five models.dev providers and arcee-api), then the
+/// endpoint default (the six models.dev-backed projections and arcee-api), then the
 /// managed canonical URL. Every current backend carries a default, so the
 /// missing-setting error is unreachable in practice (kept for future
 /// providers).

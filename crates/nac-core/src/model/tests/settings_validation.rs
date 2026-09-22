@@ -27,6 +27,7 @@ fn api_key_backends_validate_selectors_and_auto_select_the_conventional_var() {
 
     let backends = [
         (BackendKind::OpenAiResponses, "OPENAI_API_KEY"),
+        (BackendKind::OpenAiChatCompletions, "OPENAI_API_KEY"),
         (BackendKind::TogetherChat, "TOGETHER_API_KEY"),
         (BackendKind::AnthropicMessages, "ANTHROPIC_API_KEY"),
         (BackendKind::DeepSeekChat, "DEEPSEEK_API_KEY"),
@@ -56,6 +57,10 @@ fn api_key_backends_validate_selectors_and_auto_select_the_conventional_var() {
     // managed backends never auto-select.
     assert_eq!(
         backend::auto_select_api_key_env(BackendKind::OpenAiResponses).as_deref(),
+        Some("OPENAI_API_KEY")
+    );
+    assert_eq!(
+        backend::auto_select_api_key_env(BackendKind::OpenAiChatCompletions).as_deref(),
         Some("OPENAI_API_KEY")
     );
     assert_eq!(
@@ -280,7 +285,7 @@ fn managed_backends_materialize_only_absent_base_urls() {
     }
 
     // Every API-key backend materializes its catalog endpoint default:
-    // the five models.dev providers from models.dev `api`/curated
+    // the six models.dev-backed projections from models.dev `api`/curated
     // overrides (the anthropic default is the API ROOT — the adapter
     // appends "/v1/messages" itself), arcee-api from the hand-seed.
     for (backend, expected) in [
@@ -291,6 +296,10 @@ fn managed_backends_materialize_only_absent_base_urls() {
         ),
         (BackendKind::TogetherChat, "https://api.together.xyz/v1"),
         (BackendKind::OpenAiResponses, "https://api.openai.com/v1"),
+        (
+            BackendKind::OpenAiChatCompletions,
+            "https://api.openai.com/v1",
+        ),
         (BackendKind::AnthropicMessages, "https://api.anthropic.com"),
         (BackendKind::ArceeApi, "https://api.arcee.ai/api/v1"),
     ] {

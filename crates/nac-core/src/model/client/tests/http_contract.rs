@@ -248,6 +248,191 @@ async fn completions_request_omits_max_tokens_for_unknown_models() {
 }
 
 #[tokio::test]
+async fn openai_chat_custom_unknown_model_uses_portable_body_without_token_caps() {
+    let server = ScriptedServer::start(vec![ScriptedResponse::json(
+        "200 OK",
+        r#"{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+    )]);
+    let client = test_model_client(
+        BackendKind::OpenAiChatCompletions,
+        format!("{}/custom/v1/", server.base_url),
+        std::collections::BTreeMap::new(),
+    );
+    assert_eq!(
+        client.resolved_model.source,
+        catalog::ModelSource::ProviderDefault
+    );
+    assert_eq!(client.resolved_model.compat, Compat::default());
+
+    let tools = vec![ToolDefinition {
+        def_type: "function".to_string(),
+        function: FunctionDef {
+            name: "lookup".to_string(),
+            description: "Look up a value".to_string(),
+            parameters: json!({"type": "object", "properties": {}}),
+        },
+    }];
+    client
+        .send_turn(
+            vec![Message::User {
+                content: "hello".to_string(),
+            }],
+            tools,
+        )
+        .await
+        .expect("unknown custom Chat Completions model should run");
+
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/custom/v1/chat/completions");
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer selected-provider-credential")
+    );
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+    assert_eq!(body["model"], "test-model");
+    assert_eq!(body["tool_choice"], "auto");
+    for field in [
+        "max_completion_tokens",
+        "max_tokens",
+        "parallel_tool_calls",
+        "reasoning_effort",
+        "store",
+        "prompt_cache_key",
+        "stream_options",
+    ] {
+        assert!(body.get(field).is_none(), "unexpected {field} in {body}");
+    }
+}
+
+#[tokio::test]
+async fn openai_chat_explicit_token_cap_selects_exactly_one_wire_field() {
+    for (policy, present, absent) in [
+        (
+            CompletionsTokenLimit::Modern(4096),
+            "max_completion_tokens",
+            "max_tokens",
+        ),
+        (
+            CompletionsTokenLimit::Legacy(2048),
+            "max_tokens",
+            "max_completion_tokens",
+        ),
+    ] {
+        let server = ScriptedServer::start(vec![ScriptedResponse::json(
+            "200 OK",
+            r#"{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+        )]);
+        let mut client = test_model_client(
+            BackendKind::OpenAiChatCompletions,
+            server.base_url.clone(),
+            std::collections::BTreeMap::new(),
+        );
+        client.resolved_model.compat.completions_token_limit = Some(policy);
+        client
+            .send_turn(
+                vec![Message::User {
+                    content: "hello".to_string(),
+                }],
+                vec![],
+            )
+            .await
+            .expect("response parses");
+        let requests = server.finish();
+        let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+        assert!(body.get(present).is_some(), "missing {present} in {body}");
+        assert!(body.get(absent).is_none(), "unexpected {absent} in {body}");
+    }
+}
+
+#[tokio::test]
+async fn unknown_openai_chat_stream_tolerates_missing_usage_without_extensions() {
+    let server = ScriptedServer::start(vec![ScriptedResponse::json(
+        "200 OK",
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ),
+    )
+    .with_header("Content-Type", "text/event-stream")]);
+    let client = test_model_client(
+        BackendKind::OpenAiChatCompletions,
+        server.base_url.clone(),
+        std::collections::BTreeMap::new(),
+    );
+    let sink = |_delta: crate::model::ModelStreamDelta| {};
+    let response = client
+        .send_turn_streaming(
+            vec![Message::User {
+                content: "hello".to_string(),
+            }],
+            vec![],
+            Some(&sink),
+        )
+        .await
+        .expect("stream without usage should parse");
+    assert_eq!(response.assistant.content.as_deref(), Some("hello"));
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    assert!(response.usage.is_none());
+
+    let requests = server.finish();
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+    assert_eq!(body["stream"], true);
+    assert!(body.get("stream_options").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn custom_openai_chat_endpoint_does_not_inherit_optional_openai_extensions() {
+    let server = ScriptedServer::start(vec![ScriptedResponse::json(
+        "200 OK",
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ),
+    )
+    .with_header("Content-Type", "text/event-stream")]);
+    let mut client = test_model_client(
+        BackendKind::OpenAiChatCompletions,
+        server.base_url.clone(),
+        std::collections::BTreeMap::new(),
+    );
+    client.model = "gpt-5".to_string();
+    client.resolved_model = catalog::resolve(BackendKind::OpenAiChatCompletions, "gpt-5");
+    assert!(
+        client
+            .resolved_model
+            .compat
+            .completions_include_stream_usage
+    );
+    assert!(client.resolved_model.compat.completions_parallel_tool_calls);
+
+    let sink = |_delta: crate::model::ModelStreamDelta| {};
+    client
+        .send_turn_streaming(
+            vec![Message::User {
+                content: "hello".to_string(),
+            }],
+            vec![ToolDefinition {
+                def_type: "function".to_string(),
+                function: FunctionDef {
+                    name: "lookup".to_string(),
+                    description: "Look up a value".to_string(),
+                    parameters: json!({"type": "object", "properties": {}}),
+                },
+            }],
+            Some(&sink),
+        )
+        .await
+        .expect("known model should remain portable on a custom endpoint");
+
+    let requests = server.finish();
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+    assert_eq!(body["tool_choice"], "auto");
+    assert!(body.get("parallel_tool_calls").is_none(), "{body}");
+    assert!(body.get("stream_options").is_none(), "{body}");
+}
+
+#[tokio::test]
 async fn custom_arcee_routes_are_exact_on_wire() {
     let cases = [
         ("/api", "/api/v1/chat/completions"),

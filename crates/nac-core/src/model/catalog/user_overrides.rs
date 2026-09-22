@@ -24,8 +24,8 @@
 //! invalid entries are skipped individually with warnings.
 
 use super::{
-    CatalogWarning, ModelCatalog, ModelMetadata, ModelSource, ThinkingLevelMap,
-    PROVIDER_DEFAULT_MODEL_ID,
+    CatalogWarning, CompletionsTokenLimit, ModelCatalog, ModelMetadata, ModelSource,
+    ThinkingLevelMap, PROVIDER_DEFAULT_MODEL_ID,
 };
 use crate::model::BackendKind;
 use serde::Deserialize;
@@ -58,6 +58,12 @@ struct UserOverrideSet {
     display_name: Option<String>,
     context_window: Option<u64>,
     max_tokens: Option<u64>,
+    /// Explicit modern Chat Completions generation cap. This is request
+    /// policy, separate from the `max_tokens` catalog metadata above.
+    max_completion_tokens: Option<u64>,
+    /// Explicit compatibility escape hatch for gateways that only accept the
+    /// legacy `max_tokens` request field.
+    legacy_max_tokens: Option<u64>,
     cost: Option<CostPatch>,
     cache_write_1h: Option<f64>,
     reasoning: Option<bool>,
@@ -149,6 +155,34 @@ fn apply_one(catalog: &mut ModelCatalog, value: serde_json::Value) -> Result<(),
     }
     if let Some(max_tokens) = set.max_tokens {
         metadata.max_tokens = max_tokens;
+    }
+    if provider != BackendKind::OpenAiChatCompletions
+        && (set.max_completion_tokens.is_some() || set.legacy_max_tokens.is_some())
+    {
+        return Err(
+            "max_completion_tokens and legacy_max_tokens are only valid for openai-chat-completions"
+                .to_string(),
+        );
+    }
+    match (set.max_completion_tokens, set.legacy_max_tokens) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "max_completion_tokens and legacy_max_tokens are mutually exclusive".to_string(),
+            )
+        }
+        (Some(limit), None) => {
+            if limit == 0 {
+                return Err("max_completion_tokens must be greater than zero".to_string());
+            }
+            metadata.compat.completions_token_limit = Some(CompletionsTokenLimit::Modern(limit));
+        }
+        (None, Some(limit)) => {
+            if limit == 0 {
+                return Err("legacy_max_tokens must be greater than zero".to_string());
+            }
+            metadata.compat.completions_token_limit = Some(CompletionsTokenLimit::Legacy(limit));
+        }
+        (None, None) => {}
     }
     if let Some(patch) = set.cost {
         let base = super::ModelCostRates {

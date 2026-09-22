@@ -408,11 +408,22 @@ impl<'a> ModelConfigurationApplication<'a> {
             None => {
                 let api_key = resolve_backend_api_key(backend, api_key_env.as_deref())
                     .map_err(|error| invalid(error.to_string()))?;
-                list_provider_models(backend, &base_url, &api_key)
-                    .await
-                    .map_err(|error| {
-                        ModelConfigurationApplicationError::Provider(error.to_string())
-                    })?
+                match list_provider_models(backend, &base_url, &api_key).await {
+                    Ok(models) => models,
+                    Err(error) if backend == BackendKind::OpenAiChatCompletions => {
+                        // Saved/manual model ids are authoritative. Discovery
+                        // only supplies suggestions and key diagnostics; an
+                        // unavailable or incomplete /models endpoint must not
+                        // make an otherwise runnable configuration uneditable.
+                        models_error = Some(error.to_string());
+                        Vec::new()
+                    }
+                    Err(error) => {
+                        return Err(ModelConfigurationApplicationError::Provider(
+                            error.to_string(),
+                        ))
+                    }
+                }
             }
         };
         Ok(ResolvedModelConfiguration {

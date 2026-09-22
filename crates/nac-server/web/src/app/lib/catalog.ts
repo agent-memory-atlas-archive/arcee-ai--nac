@@ -147,6 +147,7 @@ export function catalogProviderForModel(
     provider.models.some((entry) => entry.id === id),
   );
   if (matches.length === 0) return null;
+  const responses = matches.find((provider) => provider.id === "openai-responses");
   const unmanaged = matches.find((provider) => provider.managed_base_url === null);
-  return (unmanaged ?? matches[0]).id;
+  return (responses ?? unmanaged ?? matches[0]).id;
 }

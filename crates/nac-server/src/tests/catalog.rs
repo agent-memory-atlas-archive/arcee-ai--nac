@@ -1,6 +1,66 @@
 use super::*;
 
 #[tokio::test]
+async fn saved_chat_configuration_survives_unavailable_model_discovery() {
+    use std::io::{Read, Write};
+
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("saved_chat_discovery_optional");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, None);
+    let manager = test_manager(&root);
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 2048];
+        let read = stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /models "));
+        stream
+            .write_all(
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 18\r\nConnection: close\r\n\r\ndiscovery disabled",
+            )
+            .unwrap();
+    });
+
+    let created = manager
+        .model_configurations()
+        .create(
+            application::model_configurations::CreateModelConfiguration {
+                name: "Custom chat gateway".to_string(),
+                backend: BackendKind::OpenAiChatCompletions,
+                model: "vendor/uncatalogued-model".to_string(),
+                base_url: Some(base_url),
+                api_key: Some("saved-custom-key".to_string()),
+                reasoning_effort: None,
+                extra_headers: None,
+                orchestrator_compaction_threshold: None,
+                initial_prompt: None,
+                light_model: None,
+            },
+        )
+        .unwrap();
+
+    let resolved = manager
+        .model_configurations()
+        .resolve_saved(&created.config_id)
+        .await
+        .expect("discovery is advisory, not model admission");
+    server.join().unwrap();
+    assert_eq!(resolved.backend, BackendKind::OpenAiChatCompletions);
+    assert_eq!(resolved.model.as_deref(), Some("vendor/uncatalogued-model"));
+    assert!(resolved.models.is_empty());
+    assert!(resolved
+        .models_error
+        .as_deref()
+        .is_some_and(|error| error.contains("503")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn saved_configurations_accept_public_https_across_create_update_and_resolve() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("saved_custom_public_https");
@@ -356,7 +416,7 @@ async fn models_endpoint_serves_the_catalog_listing() {
 
     assert!(body["catalog_version"].as_u64().unwrap() >= 1);
     let providers = body["providers"].as_array().unwrap();
-    assert_eq!(providers.len(), 8);
+    assert_eq!(providers.len(), 9);
     let by_id = |id: &str| providers.iter().find(|p| p["id"] == id).unwrap();
 
     // Auth requirements and managed base URLs derive from the backend
@@ -371,14 +431,15 @@ async fn models_endpoint_serves_the_catalog_listing() {
     );
     assert_eq!(by_id("chatgpt-codex-responses")["auth"], "codex_oauth");
 
-    // Catalog endpoint defaults: present for the five models.dev
-    // providers and the hand-seeded arcee-api (exact values are pinned
+    // Catalog endpoint defaults: present for the six models.dev-backed
+    // projections and the hand-seeded arcee-api (exact values are pinned
     // hermetically in nac-core; a machine overlay could carry a
     // refreshed models.dev `api`), absent for the managed providers.
     for id in [
         "anthropic-messages",
         "deepseek-chat",
         "fireworks-chat",
+        "openai-chat-completions",
         "openai-responses",
         "together-chat",
         "arcee-api",
@@ -497,6 +558,14 @@ async fn models_endpoint_computes_auth_status_from_the_environment() {
     assert_eq!(by_id("openai-responses")["auth_status"], "no_credential");
     assert_eq!(by_id("openai-responses")["auth_hint"], "OPENAI_API_KEY");
     assert!(by_id("openai-responses")["connection"].is_null());
+    assert_eq!(
+        by_id("openai-chat-completions")["auth_status"],
+        "no_credential"
+    );
+    assert_eq!(
+        by_id("openai-chat-completions")["auth_hint"],
+        "OPENAI_API_KEY"
+    );
     // Managed providers without stored credentials hint the login
     // commands.
     assert_eq!(by_id("arcee-auth")["auth_status"], "no_credential");
@@ -571,6 +640,11 @@ async fn models_endpoint_computes_auth_status_from_the_environment() {
     assert!(by_id("openai-responses")["auth_hint"].is_null());
     assert_eq!(
         by_id("openai-responses")["connection"]["api_key_env"],
+        "OPENAI_API_KEY"
+    );
+    assert_eq!(by_id("openai-chat-completions")["auth_status"], "ready");
+    assert_eq!(
+        by_id("openai-chat-completions")["connection"]["api_key_env"],
         "OPENAI_API_KEY"
     );
     assert_eq!(by_id("anthropic-messages")["auth_status"], "no_credential");

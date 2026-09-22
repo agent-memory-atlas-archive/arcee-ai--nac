@@ -13,6 +13,7 @@ pub(crate) fn api_key_backend(backend: BackendKind) -> bool {
             | BackendKind::FireworksChat
             | BackendKind::TogetherChat
             | BackendKind::OpenAiResponses
+            | BackendKind::OpenAiChatCompletions
             | BackendKind::AnthropicMessages
             | BackendKind::ArceeApi
     )

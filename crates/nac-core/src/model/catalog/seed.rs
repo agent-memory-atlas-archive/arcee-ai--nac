@@ -3,7 +3,7 @@
 //! The per-provider `_default` entries transcribe the pre-S4 validation
 //! matrix into data; since S4, `backend.rs::validate_model_reasoning_effort`
 //! resolves these maps (unknown models keep the conservative matrix
-//! behavior). The five models.dev-backed providers keep conservative
+//! behavior). The six models.dev-backed projections keep conservative
 //! fallback limits/cost on their seeds — real values arrive with the
 //! generated models.dev baseline.
 //!
@@ -113,6 +113,17 @@ fn completions_compat(
         completions_thinking_format: thinking_format,
         completions_reasoning_field: Some(reasoning_field.to_string()),
         completions_temperature: temperature,
+        ..Compat::default()
+    }
+}
+
+pub(super) fn openai_chat_completions_compat() -> Compat {
+    Compat {
+        completions_thinking_format: Some(CompletionsThinkingFormat::OpenAi),
+        completions_reasoning_field: Some("reasoning_content".to_string()),
+        completions_include_stream_usage: true,
+        completions_parallel_tool_calls: true,
+        ..Compat::default()
     }
 }
 
@@ -493,6 +504,18 @@ pub(super) fn seed_catalog() -> ModelCatalog {
         &[],
         None,
         // Endpoint default owned by the generated baseline.
+        None,
+    );
+    register(
+        entry(
+            BackendKind::OpenAiChatCompletions,
+            PROVIDER_DEFAULT_MODEL_ID,
+            false,
+            ThinkingLevelMap::default(),
+            Compat::default(),
+        ),
+        &[],
+        None,
         None,
     );
     register(

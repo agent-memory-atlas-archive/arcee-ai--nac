@@ -180,6 +180,10 @@ pub(super) fn completions_chat_request(
     }
     if !tools.is_empty() {
         request["tools"] = serde_json::to_value(tools).unwrap_or_else(|_| Value::Array(Vec::new()));
+        request["tool_choice"] = json!("auto");
+        if compat.completions_parallel_tool_calls {
+            request["parallel_tool_calls"] = Value::Bool(true);
+        }
     }
     match (compat.completions_thinking_format, reasoning_effort) {
         (_, None) => {}
@@ -191,6 +195,18 @@ pub(super) fn completions_chat_request(
                 "reasoning effort '{}' reached a completions provider without a thinking format",
                 effort.as_str()
             );
+        }
+        (
+            Some(CompletionsThinkingFormat::OpenAi | CompletionsThinkingFormat::Arcee),
+            Some(ReasoningEffort::None),
+        ) => {
+            request["reasoning_effort"] = json!("none");
+        }
+        (
+            Some(CompletionsThinkingFormat::OpenAi | CompletionsThinkingFormat::Arcee),
+            Some(effort),
+        ) => {
+            request["reasoning_effort"] = json!(validated_wire_effort(thinking_levels, effort));
         }
         (Some(CompletionsThinkingFormat::Deepseek), Some(ReasoningEffort::None)) => {
             request["thinking"] = json!({"type": "disabled"});
@@ -216,12 +232,6 @@ pub(super) fn completions_chat_request(
             request["reasoning"] = json!({"enabled": true});
             request["reasoning_effort"] = json!(validated_wire_effort(thinking_levels, effort));
             request["chat_template_kwargs"] = json!({"clear_thinking": false});
-        }
-        (Some(CompletionsThinkingFormat::Arcee), Some(ReasoningEffort::None)) => {
-            request["reasoning_effort"] = json!("none");
-        }
-        (Some(CompletionsThinkingFormat::Arcee), Some(effort)) => {
-            request["reasoning_effort"] = json!(validated_wire_effort(thinking_levels, effort));
         }
     }
     request

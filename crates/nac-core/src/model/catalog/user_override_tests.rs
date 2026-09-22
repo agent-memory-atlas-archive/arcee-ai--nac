@@ -5,7 +5,7 @@
 
 use super::test_support::{write_overlay, TempHome};
 use super::*;
-use crate::model::ReasoningEffort;
+use crate::model::{CompletionsTokenLimit, ReasoningEffort};
 
 fn write_models_json(home: &TempHome, doc: serde_json::Value) {
     std::fs::write(
@@ -50,6 +50,75 @@ fn user_override_patches_an_exact_model() {
         metadata.thinking_level_map.wire_value(ReasoningEffort::Max),
         Some("max")
     );
+}
+
+#[test]
+fn chat_completion_request_caps_are_explicit_and_mutually_exclusive() {
+    for (field, expected) in [
+        (
+            "max_completion_tokens",
+            CompletionsTokenLimit::Modern(4_096),
+        ),
+        ("legacy_max_tokens", CompletionsTokenLimit::Legacy(4_096)),
+    ] {
+        let home = TempHome::new(field);
+        let set = match field {
+            "max_completion_tokens" => serde_json::json!({"max_completion_tokens": 4_096}),
+            "legacy_max_tokens" => serde_json::json!({"legacy_max_tokens": 4_096}),
+            _ => unreachable!(),
+        };
+        write_models_json(
+            &home,
+            serde_json::json!({
+                "overrides": [{
+                    "provider": "openai-chat-completions",
+                    "model": "custom-model",
+                    "set": set
+                }]
+            }),
+        );
+        let (catalog, warnings) = ModelCatalog::load_from_home(Some(home.path()));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            catalog
+                .resolve(BackendKind::OpenAiChatCompletions, "custom-model")
+                .compat
+                .completions_token_limit,
+            Some(expected)
+        );
+    }
+
+    let home = TempHome::new("both-token-fields");
+    write_models_json(
+        &home,
+        serde_json::json!({
+            "overrides": [{
+                "provider": "openai-chat-completions",
+                "model": "custom-model",
+                "set": { "max_completion_tokens": 4096, "legacy_max_tokens": 2048 }
+            }]
+        }),
+    );
+    let (_, warnings) = ModelCatalog::load_from_home(Some(home.path()));
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.to_string().contains("mutually exclusive")));
+
+    let home = TempHome::new("token-field-wrong-provider");
+    write_models_json(
+        &home,
+        serde_json::json!({
+            "overrides": [{
+                "provider": "deepseek-chat",
+                "model": "deepseek-chat",
+                "set": { "max_completion_tokens": 4096 }
+            }]
+        }),
+    );
+    let (_, warnings) = ModelCatalog::load_from_home(Some(home.path()));
+    assert!(warnings.iter().any(|warning| warning
+        .to_string()
+        .contains("only valid for openai-chat-completions")));
 }
 
 #[test]
