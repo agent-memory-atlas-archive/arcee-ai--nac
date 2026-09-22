@@ -61,6 +61,75 @@ async fn saved_chat_configuration_survives_unavailable_model_discovery() {
 }
 
 #[tokio::test]
+async fn saved_chat_configuration_survives_discovery_that_omits_its_model() {
+    use std::io::{Read, Write};
+
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("saved_chat_incomplete_discovery");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, None);
+    let manager = test_manager(&root);
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 2048];
+        let read = stream.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /models "));
+        let body = r#"{"data":[{"id":"vendor/different-model"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+
+    let created = manager
+        .model_configurations()
+        .create(
+            application::model_configurations::CreateModelConfiguration {
+                name: "Custom chat gateway".to_string(),
+                backend: BackendKind::OpenAiChatCompletions,
+                model: "vendor/manually-selected-model".to_string(),
+                base_url: Some(base_url),
+                api_key: Some("saved-custom-key".to_string()),
+                reasoning_effort: None,
+                extra_headers: None,
+                orchestrator_compaction_threshold: None,
+                initial_prompt: None,
+                light_model: None,
+            },
+        )
+        .unwrap();
+
+    let resolved = manager
+        .model_configurations()
+        .resolve_saved(&created.config_id)
+        .await
+        .expect("discovery suggestions must not replace a saved model");
+    server.join().unwrap();
+    assert_eq!(resolved.backend, BackendKind::OpenAiChatCompletions);
+    assert_eq!(
+        resolved.model.as_deref(),
+        Some("vendor/manually-selected-model")
+    );
+    assert_eq!(
+        resolved
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["vendor/different-model"]
+    );
+    assert!(resolved.models_error.is_none());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn saved_configurations_accept_public_https_across_create_update_and_resolve() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("saved_custom_public_https");
