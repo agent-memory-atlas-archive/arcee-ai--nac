@@ -5,6 +5,7 @@ import Button, { ButtonContent, ButtonSize, ButtonVariant } from "../button";
 import ChatSessionLeadingMark from "../chat-session-fork-mark";
 import Icon, { IconName } from "../icon";
 import ShimmerLoader from "../loader/ShimmerLoader";
+import Tooltip from "../tooltip";
 
 interface ChatSessionTabProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "title"> {
   title: string;
@@ -13,10 +14,10 @@ interface ChatSessionTabProps extends Omit<React.ButtonHTMLAttributes<HTMLButton
   running?: boolean;
   /** Display title of the chat this session was forked from. */
   forkedFromTitle?: string | null;
-  /** Compact identity shown after the title, such as the session behavior. */
-  badge?: string;
-  /** Full accessible meaning of the compact badge. */
-  badgeLabel?: string;
+  /** Compact identity shown immediately before the title. */
+  behaviorIcon?: IconName;
+  /** Full accessible and hover/focus meaning of the behavior icon. */
+  behaviorLabel?: string;
   /** Takes the tab off the strip. The chat itself is untouched. */
   onDismiss?: () => void;
 }
@@ -44,17 +45,18 @@ export function ChatSessionTabSkeleton({ className = "" }: { className?: string 
  * is running, when the loader takes that slot.
  *
  * Pointing at or focusing a tab reveals its close control. The tab reserves that
- * room only while the control is visible, so it cannot cover the title or badge
- * and untouched tabs still show as much of their name as possible. Renaming
- * lives in the chat list, where there is room to say what the button does.
+ * room only while the control is visible, so it cannot cover the behavior icon
+ * or title and untouched tabs still show as much of their name as possible.
+ * Renaming lives in the chat list, where there is room to say what the button
+ * does.
  */
 const ChatSessionTab: React.FC<ChatSessionTabProps> = ({
   title,
   active = false,
   running = false,
   forkedFromTitle,
-  badge,
-  badgeLabel,
+  behaviorIcon,
+  behaviorLabel,
   onDismiss,
   className = "",
   type = "button",
@@ -69,6 +71,44 @@ const ChatSessionTab: React.FC<ChatSessionTabProps> = ({
         ? "text-btn-secondary-pressed"
         : "text-btn-secondary group-hover:text-btn-secondary-hovered";
 
+  const tabButton = (
+    <button
+      type={type}
+      title={title}
+      aria-label={ariaLabel ?? (behaviorLabel ? `${title}, ${behaviorLabel}` : title)}
+      aria-current={active ? "page" : undefined}
+      className="flex h-10 w-full min-w-0 flex-1 items-center justify-start gap-1 py-1 pl-2 pr-2 group-hover:pr-8 group-has-[:focus-visible]:pr-8"
+      {...props}
+    >
+      <ChatSessionLeadingMark
+        forkedFromTitle={forkedFromTitle}
+        running={running}
+        className={
+          running
+            ? undefined
+            : active
+              ? "text-btn-secondary-pressed"
+              : "text-btn-secondary group-hover:text-btn-secondary-hovered"
+        }
+      />
+      {behaviorIcon ? (
+        <Icon
+          iconName={behaviorIcon}
+          size={16}
+          aria-hidden
+          data-session-behavior-icon={behaviorIcon}
+          className={cn("shrink-0", labelClass)}
+        />
+      ) : null}
+      <span
+        data-session-tab-title
+        className={cn("label-micro w-full min-w-0 flex-1 truncate text-left", labelClass)}
+      >
+        {title}
+      </span>
+    </button>
+  );
+
   return (
     <div
       className={cn(
@@ -79,41 +119,18 @@ const ChatSessionTab: React.FC<ChatSessionTabProps> = ({
         className,
       )}
     >
-      <button
-        type={type}
-        title={title}
-        aria-label={ariaLabel ?? (badgeLabel ? `${title}, ${badgeLabel}` : title)}
-        aria-current={active ? "page" : undefined}
-        className="flex h-10 w-full min-w-0 flex-1 items-center justify-start gap-1 py-1 pl-2 pr-2 group-hover:pr-8 group-has-[:focus-visible]:pr-8"
-        {...props}
-      >
-        <ChatSessionLeadingMark
-          forkedFromTitle={forkedFromTitle}
-          running={running}
-          className={
-            running
-              ? undefined
-              : active
-                ? "text-btn-secondary-pressed"
-                : "text-btn-secondary group-hover:text-btn-secondary-hovered"
-          }
-        />
-        <span
-          data-session-tab-title
-          className={cn("label-micro w-full min-w-0 flex-1 truncate text-left", labelClass)}
+      {behaviorLabel ? (
+        <Tooltip
+          title={behaviorLabel}
+          position={Tooltip.Position.BottomLeft}
+          sticky
+          className="min-w-0 flex-1"
         >
-          {title}
-        </span>
-        {badge ? (
-          <span
-            data-session-tab-badge
-            title={badgeLabel}
-            className="tag-label max-w-[88px] shrink-0 truncate rounded bg-elevation-level-3 px-1 text-basic-tertiary"
-          >
-            {badge}
-          </span>
-        ) : null}
-      </button>
+          {tabButton}
+        </Tooltip>
+      ) : (
+        tabButton
+      )}
       {onDismiss ? (
         <Button
           variant={ButtonVariant.Tertiary}

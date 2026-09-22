@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -70,14 +70,16 @@ describe("project session tab behavior identity", () => {
     );
 
     const expected = [
-      ["Plan the managed deployment rollout", "NAC orchestrator"],
-      ["Implement connection status feedback", "Direct coding agent"],
-      ["Coordinate release readiness review", "Direct + NAC orchestration"],
+      ["Plan the managed deployment rollout", "NAC orchestrator", "flow"],
+      ["Implement connection status feedback", "Direct coding agent", "plane"],
+      ["Coordinate release readiness review", "Direct + NAC orchestration", "combine"],
     ] as const;
 
-    for (const [title, behavior] of expected) {
+    for (const [title, behavior, icon] of expected) {
       const tab = screen.getByRole("button", { name: `${title}, ${behavior}` });
       expect(tab.getAttribute("title")).toBe(title);
+      expect(tab.querySelector(`[data-session-behavior-icon="${icon}"]`)).toBeTruthy();
+      expect(tab.querySelector("[data-session-tab-badge]")).toBeNull();
       expect(tab.closest(".chat-session-tab")?.className).toContain("w-full");
       const slot = tab.closest(".chat-session-tab")?.parentElement;
       expect(slot?.className).toContain("flex-[1_0_224px]");
@@ -92,12 +94,20 @@ describe("project session tab behavior identity", () => {
     expect(active.getAttribute("aria-current")).toBe("page");
     expect(active.className).toContain("group-hover:pr-8");
     expect(active.className).toContain("group-has-[:focus-visible]:pr-8");
-    expect(
-      screen
-        .getByRole("button", {
-          name: "Coordinate release readiness review, Direct + NAC orchestration",
-        })
-        .querySelector("[data-session-tab-badge]")?.className,
-    ).toContain("max-w-[88px]");
+
+    expect(screen.queryByText("Orchestrator")).toBeNull();
+    expect(screen.queryByText("Direct")).toBeNull();
+    expect(screen.queryByText("Direct + NAC")).toBeNull();
+
+    const orchestrator = screen.getByRole("button", {
+      name: "Plan the managed deployment rollout, NAC orchestrator",
+    });
+    const orchestratorIcon = orchestrator.querySelector('[data-session-behavior-icon="flow"]');
+    fireEvent.mouseEnter(orchestratorIcon!);
+    expect(screen.getByText("NAC orchestrator").closest(".tooltip-box")).toBeTruthy();
+    fireEvent.mouseLeave(orchestratorIcon!);
+
+    fireEvent.focus(active);
+    expect(screen.getByText("Direct coding agent").closest(".tooltip-box")).toBeTruthy();
   });
 });

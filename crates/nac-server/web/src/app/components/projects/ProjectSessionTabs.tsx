@@ -33,12 +33,22 @@ import {
   useChatTabOrder,
   useDismissedChatTabs,
 } from "@/app/store/chatTabsStore";
-import type { ManagedSessionSummary, SessionSummarySnapshot } from "@/app/types/api";
+import type {
+  ManagedSessionSummary,
+  SessionBehavior,
+  SessionSummarySnapshot,
+} from "@/app/types/api";
 
 // Three or more tabs should trade unused width for readable names, then stop
 // shrinking at 224px and let the existing one-row strip scroll. The 272px cap
 // keeps one or two tabs from becoming visually detached from their content.
 const SESSION_TAB_SLOT_CLASS = "w-auto flex-[1_0_224px] min-w-[224px] max-w-[272px]";
+
+const SESSION_BEHAVIOR_ICONS = {
+  orchestrator: IconName.Flow,
+  direct: IconName.Plane,
+  "direct-with-orchestrator": IconName.Combine,
+} satisfies Record<SessionBehavior, IconName>;
 
 /** Which side of the tab under the pointer the dragged one would land on. */
 function edgeUnderPointer(element: HTMLElement, clientX: number): DropEdge {
@@ -264,8 +274,8 @@ export function ProjectSessionTabs({
                 ) : null}
                 <ChatSessionTab
                   title={sessionTitle(entry.summary)}
-                  badge={behavior.navigationLabel}
-                  badgeLabel={behavior.label}
+                  behaviorIcon={SESSION_BEHAVIOR_ICONS[behavior.id]}
+                  behaviorLabel={behavior.label}
                   active={sessionId === activeSessionId}
                   running={isActiveRun(entry.active_run)}
                   forkedFromTitle={entry.summary.forked_from?.title}

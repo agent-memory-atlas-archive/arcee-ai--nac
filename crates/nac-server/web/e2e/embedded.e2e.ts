@@ -720,17 +720,16 @@ test("asks for immutable behavior on every first and new chat", async ({
   await expect(page.getByText("Coding agents", { exact: true })).toBeVisible();
   await expect(page.getByText("NAC orchestrators", { exact: true })).toBeVisible();
 
-  const tabs = page.locator(".chat-session-tab > button:first-child");
-  for (const [title, behavior] of [
-    [orchestratorTitle, "NAC orchestrator"],
-    [directTitle, "Direct coding agent"],
-    [hybridTitle, "Direct + NAC orchestration"],
+  for (const [title, behavior, icon] of [
+    [orchestratorTitle, "NAC orchestrator", "flow"],
+    [directTitle, "Direct coding agent", "plane"],
+    [hybridTitle, "Direct + NAC orchestration", "combine"],
   ] as const) {
-    await expect(page.getByRole("button", { name: `${title}, ${behavior}` })).toHaveAttribute(
-      "title",
-      title,
-    );
+    const tab = page.getByRole("button", { name: `${title}, ${behavior}` });
+    await expect(tab).toHaveAttribute("title", title);
+    await expect(tab.locator(`[data-session-behavior-icon="${icon}"]`)).toBeVisible();
   }
+  await expect(page.locator("[data-session-tab-badge]")).toHaveCount(0);
   const widths = await page
     .locator(".chat-session-tab")
     .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().width));
@@ -753,36 +752,35 @@ test("asks for immutable behavior on every first and new chat", async ({
   const hybridTab = page.getByRole("button", {
     name: `${hybridTitle}, Direct + NAC orchestration`,
   });
-  const hybridTabRoot = hybridTab.locator("..");
+  const hybridIcon = hybridTab.locator('[data-session-behavior-icon="combine"]');
   const hybridClose = page.getByRole("button", { name: `Close ${hybridTitle}` });
-  await hybridTabRoot.hover();
+  await hybridIcon.hover();
   await expect(hybridClose).toBeVisible();
-  const hoverBadgeBox = await hybridTab.locator("[data-session-tab-badge]").boundingBox();
+  await expect(
+    page.locator(".tooltip-box").filter({ hasText: "Direct + NAC orchestration" }),
+  ).toBeVisible();
+  const hoverTitleBox = await hybridTab.locator("[data-session-tab-title]").boundingBox();
   const hoverCloseBox = await hybridClose.boundingBox();
-  expect(hoverBadgeBox).toBeTruthy();
+  expect(hoverTitleBox).toBeTruthy();
   expect(hoverCloseBox).toBeTruthy();
-  expect(hoverBadgeBox!.x + hoverBadgeBox!.width).toBeLessThanOrEqual(hoverCloseBox!.x);
+  expect(hoverTitleBox!.x + hoverTitleBox!.width).toBeLessThanOrEqual(hoverCloseBox!.x);
 
   await hybridTab.focus();
+  await expect(
+    page.locator(".tooltip-box").filter({ hasText: "Direct + NAC orchestration" }),
+  ).toBeVisible();
   await page.keyboard.press("Tab");
   await expect(hybridClose).toBeFocused();
   await expect(hybridClose).toBeVisible();
-  const focusBadgeBox = await hybridTab.locator("[data-session-tab-badge]").boundingBox();
+  const focusTitleBox = await hybridTab.locator("[data-session-tab-title]").boundingBox();
   const focusCloseBox = await hybridClose.boundingBox();
-  expect(focusBadgeBox).toBeTruthy();
+  expect(focusTitleBox).toBeTruthy();
   expect(focusCloseBox).toBeTruthy();
-  expect(focusBadgeBox!.x + focusBadgeBox!.width).toBeLessThanOrEqual(focusCloseBox!.x);
+  expect(focusTitleBox!.x + focusTitleBox!.width).toBeLessThanOrEqual(focusCloseBox!.x);
 
-  await expect(tabs.filter({ has: page.getByText("Orchestrator", { exact: true }) })).toHaveCount(
-    1,
-  );
-  await expect(tabs.filter({ has: page.getByText("Direct", { exact: true }) })).toHaveCount(1);
-  await expect(tabs.filter({ has: page.getByText("Direct + NAC", { exact: true }) })).toHaveCount(
-    1,
-  );
-  await tabs.filter({ has: page.getByText("Orchestrator", { exact: true }) }).click();
+  await page.getByRole("button", { name: `${orchestratorTitle}, NAC orchestrator` }).click();
   await expect(page.getByText("NAC orchestrator", { exact: true })).toBeVisible();
-  await tabs.filter({ has: page.getByText("Direct", { exact: true }) }).click();
+  await page.getByRole("button", { name: `${directTitle}, Direct coding agent` }).click();
   await expect(page.getByText("Direct coding agent", { exact: true })).toBeVisible();
 });
 
