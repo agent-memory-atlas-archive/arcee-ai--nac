@@ -12,7 +12,6 @@ import {
   LoaderSize,
 } from "@/app/atoms";
 import { managedQueryKeys, useManagedGitHub } from "@/app/features/managed/queries";
-import { StatusDot } from "@/app/features/managed/presentation/ManagedStatusPanel";
 import { humanErrorText, toRunError } from "@/app/lib/providerError";
 import { errorMessage, useToast } from "@/app/providers/ToastProvider";
 import { api } from "@/app/services/api";
@@ -35,9 +34,12 @@ export function ManagedGitHubPanel({ onConnected }: { onConnected?: () => void }
         try {
           const state = await api.pollManagedGitHubLogin(login.login_id, controller.signal);
           if (state.state === "complete") {
+            // Publish the authoritative profile before removing the device prompt.
+            // Background normalization must not briefly offer Connect GitHub again.
+            client.setQueryData(managedQueryKeys.github, state.auth);
             setLogin(null);
             setLoginError("");
-            await Promise.all([
+            void Promise.all([
               client.invalidateQueries({ queryKey: managedQueryKeys.github }),
               client.invalidateQueries({ queryKey: managedQueryKeys.hostStatus }),
             ]);
@@ -115,7 +117,10 @@ export function ManagedGitHubPanel({ onConnected }: { onConnected?: () => void }
               </p>
               <p className="text-small text-basic-tertiary truncate">@{github.data.login}</p>
             </div>
-            <StatusDot ready />
+            <span className="flex shrink-0 items-center gap-1.5 label-small text-success-primary">
+              <Icon iconName={IconName.CheckCircle} aria-hidden="true" />
+              Connected
+            </span>
           </div>
           {github.data.git_name && github.data.git_email ? (
             <p className="mt-3 text-small text-basic-tertiary">
