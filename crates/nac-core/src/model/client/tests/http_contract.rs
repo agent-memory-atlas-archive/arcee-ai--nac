@@ -382,6 +382,51 @@ async fn unknown_openai_chat_stream_tolerates_missing_usage_without_extensions()
 }
 
 #[tokio::test]
+async fn openai_chat_stream_accumulates_and_emits_refusal_text() {
+    let server = ScriptedServer::start(vec![ScriptedResponse::json(
+        "200 OK",
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"refusal\":\"I cannot \"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"refusal\":\"help with that.\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ),
+    )
+    .with_header("Content-Type", "text/event-stream")]);
+    let client = test_model_client(
+        BackendKind::OpenAiChatCompletions,
+        server.base_url.clone(),
+        std::collections::BTreeMap::new(),
+    );
+    let deltas = std::sync::Mutex::new(Vec::new());
+    let sink = |delta: crate::model::ModelStreamDelta| {
+        deltas.lock().unwrap().push(delta);
+    };
+
+    let response = client
+        .send_turn_streaming(
+            vec![Message::User {
+                content: "hello".to_string(),
+            }],
+            vec![],
+            Some(&sink),
+        )
+        .await
+        .expect("refusal stream should parse");
+
+    assert_eq!(
+        response.assistant.content.as_deref(),
+        Some("I cannot help with that.")
+    );
+    let emitted = deltas
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|delta| delta.text)
+        .collect::<String>();
+    assert_eq!(emitted, "I cannot help with that.");
+}
+
+#[tokio::test]
 async fn custom_openai_chat_endpoint_does_not_inherit_optional_openai_extensions() {
     let server = ScriptedServer::start(vec![ScriptedResponse::json(
         "200 OK",

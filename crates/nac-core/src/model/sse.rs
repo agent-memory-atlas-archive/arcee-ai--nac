@@ -765,7 +765,13 @@ mod tests {
             "\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,",
             "\"id\":\"call_1\",\"type\":\"function\",\"function\":",
-            "{\"name\":\"read\",\"arguments\":\"{}\"}}]},",
+            "{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\"}},",
+            "{\"index\":1,\"id\":\"call_2\",\"type\":\"function\",",
+            "\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\"}}]},",
+            "\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,",
+            "\"function\":{\"arguments\":\"\\\"a\\\"}\"}},{\"index\":1,",
+            "\"function\":{\"arguments\":\"\\\"b\\\"}\"}}]},",
             "\"finish_reason\":\"tool_calls\"}]}\n\n",
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,",
             "\"completion_tokens\":2,\"total_tokens\":3}}\n\n",
@@ -793,6 +799,18 @@ mod tests {
         assert_eq!(
             response["choices"][0]["message"]["tool_calls"][0]["id"],
             "call_1"
+        );
+        assert_eq!(
+            response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"a\"}"
+        );
+        assert_eq!(
+            response["choices"][0]["message"]["tool_calls"][1]["id"],
+            "call_2"
+        );
+        assert_eq!(
+            response["choices"][0]["message"]["tool_calls"][1]["function"]["arguments"],
+            "{\"path\":\"b\"}"
         );
         assert_eq!(response["usage"]["total_tokens"], 3);
     }

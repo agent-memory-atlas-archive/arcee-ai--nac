@@ -448,6 +448,7 @@ async fn create_remote_session_with_ssh_host_skips_local_checks_and_persists_tar
 
     let custom_base_url = "https://gateway.noncanonical.example/v1";
     let mut model = test_openai_model_options();
+    model.backend = Some(BackendKind::OpenAiChatCompletions);
     model.api_base_url = Some(custom_base_url.to_string());
     let run_config = build_run_config(
         RunOptions {
@@ -506,7 +507,7 @@ async fn create_remote_session_with_ssh_host_skips_local_checks_and_persists_tar
     assert_eq!(stored.cwd, remote_cwd);
     assert_eq!(stored.model, "test-model");
     assert_eq!(stored.base_url, custom_base_url);
-    assert_eq!(stored.backend, BackendKind::OpenAiResponses);
+    assert_eq!(stored.backend, BackendKind::OpenAiChatCompletions);
     assert_eq!(stored.reasoning_effort, None);
     assert_eq!(stored.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
     assert!(stored.extra_headers.is_empty());

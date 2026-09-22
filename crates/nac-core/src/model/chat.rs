@@ -100,6 +100,7 @@ pub(super) fn parse_completions_response(
             content: message
                 .get("content")
                 .and_then(Value::as_str)
+                .or_else(|| message.get("refusal").and_then(Value::as_str))
                 .map(ToString::to_string),
             reasoning_field: reasoning_text.as_ref().map(|_| reasoning_field.to_string()),
             reasoning_text,

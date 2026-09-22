@@ -13,6 +13,7 @@ pub(super) struct ChatStreamFold<'sink> {
     /// rebuilt response matches what the provider would have sent unstreamed.
     reasoning_field: &'sink str,
     content: String,
+    refusal: String,
     reasoning: String,
     finish_reason: Option<String>,
     usage: Option<Value>,
@@ -37,6 +38,7 @@ impl<'sink> ChatStreamFold<'sink> {
             on_delta,
             reasoning_field,
             content: String::new(),
+            refusal: String::new(),
             reasoning: String::new(),
             finish_reason: None,
             usage: None,
@@ -116,6 +118,10 @@ impl StreamFold for ChatStreamFold<'_> {
             self.content.push_str(text);
             self.emit(ModelStreamDelta::text(text));
         }
+        if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+            self.refusal.push_str(refusal);
+            self.emit(ModelStreamDelta::text(refusal));
+        }
         if let Some(reasoning) = delta
             .get("reasoning_content")
             .or_else(|| delta.get("reasoning"))
@@ -149,6 +155,9 @@ impl StreamFold for ChatStreamFold<'_> {
         });
         if !self.reasoning.is_empty() {
             message[self.reasoning_field] = Value::String(self.reasoning);
+        }
+        if !self.refusal.is_empty() {
+            message["refusal"] = Value::String(self.refusal);
         }
         if !self.tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(

@@ -222,6 +222,30 @@ mod tests {
     }
 
     #[test]
+    fn resolves_explicit_openai_chat_completions_light_client() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let original_openai = std::env::var_os("OPENAI_API_KEY");
+        unsafe {
+            std::env::set_var("OPENAI_API_KEY", "test-key");
+        }
+
+        let light = LightModelSettings {
+            model: "gpt-5-mini".to_string(),
+            backend: Some(BackendKind::OpenAiChatCompletions),
+            base_url: None,
+            api_key_env: None,
+            reasoning_effort: None,
+        };
+        let client = resolve_light_client(&light, &BTreeMap::new(), None).unwrap();
+
+        assert_eq!(client.backend(), BackendKind::OpenAiChatCompletions);
+        assert_eq!(client.base_url(), "https://api.openai.com/v1");
+        assert_eq!(client.api_key_env(), Some("OPENAI_API_KEY"));
+
+        restore_env("OPENAI_API_KEY", original_openai);
+    }
+
+    #[test]
     fn missing_light_model_api_key_names_the_required_credential() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let original_arcee = std::env::var_os("ARCEE_API_KEY");
