@@ -45,9 +45,9 @@ import type {
 const SESSION_TAB_SLOT_CLASS = "w-auto flex-[1_0_224px] min-w-[224px] max-w-[272px]";
 
 const SESSION_BEHAVIOR_ICONS = {
-  orchestrator: IconName.Flow,
+  orchestrator: IconName.Orchestrator,
   direct: IconName.Plane,
-  "direct-with-orchestrator": IconName.Combine,
+  "direct-with-orchestrator": IconName.PlaneAdd,
 } satisfies Record<SessionBehavior, IconName>;
 
 /** Which side of the tab under the pointer the dragged one would land on. */

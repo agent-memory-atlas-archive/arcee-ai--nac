@@ -721,9 +721,9 @@ test("asks for immutable behavior on every first and new chat", async ({
   await expect(page.getByText("NAC orchestrators", { exact: true })).toBeVisible();
 
   for (const [title, behavior, icon] of [
-    [orchestratorTitle, "NAC orchestrator", "flow"],
+    [orchestratorTitle, "NAC orchestrator", "orchestrator"],
     [directTitle, "Direct coding agent", "plane"],
-    [hybridTitle, "Direct + NAC orchestration", "combine"],
+    [hybridTitle, "Direct + NAC orchestration", "planeAdd"],
   ] as const) {
     const tab = page.getByRole("button", { name: `${title}, ${behavior}` });
     await expect(tab).toHaveAttribute("title", title);
@@ -752,7 +752,7 @@ test("asks for immutable behavior on every first and new chat", async ({
   const hybridTab = page.getByRole("button", {
     name: `${hybridTitle}, Direct + NAC orchestration`,
   });
-  const hybridIcon = hybridTab.locator('[data-session-behavior-icon="combine"]');
+  const hybridIcon = hybridTab.locator('[data-session-behavior-icon="planeAdd"]');
   const hybridClose = page.getByRole("button", { name: `Close ${hybridTitle}` });
   await hybridIcon.hover();
   await expect(hybridClose).toBeVisible();

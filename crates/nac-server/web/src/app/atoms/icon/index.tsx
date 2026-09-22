@@ -62,6 +62,7 @@ export enum IconName {
   Image = "image",
   Attachment = "attachment",
   Plane = "plane",
+  PlaneAdd = "planeAdd",
   Headphones = "headphones",
   Bolt = "bolt",
   Private = "private",
@@ -143,6 +144,7 @@ export enum IconName {
   Unpin = "unpin",
   OpenMobileModal = "openMobileModal",
   ChatGpt = "chatGpt",
+  Orchestrator = "orchestrator",
 }
 
 interface IconProps extends Omit<React.SVGProps<SVGSVGElement>, "color"> {
@@ -154,12 +156,23 @@ interface IconProps extends Omit<React.SVGProps<SVGSVGElement>, "color"> {
 
 const DEFAULT_VIEW_BOX = "0 0 24 24";
 
+const pathSegments = (d: string | readonly string[] | undefined): readonly string[] =>
+  d == null ? [""] : typeof d === "string" ? [d] : d;
+
 const getGlyph = (iconName: IconName) => {
   const entry = iconPaths[iconName];
   if (entry?.kind === "glyph") {
-    return entry;
+    return {
+      viewBox: entry.viewBox,
+      segments: pathSegments(entry.d),
+      fillRule: entry.fillRule,
+    };
   }
-  return { d: entry?.d ?? "", viewBox: DEFAULT_VIEW_BOX };
+  return {
+    viewBox: DEFAULT_VIEW_BOX,
+    segments: pathSegments(entry?.d),
+    fillRule: entry?.fillRule,
+  };
 };
 
 /**
@@ -217,7 +230,7 @@ const Icon: React.FC<IconProps> & { Name: typeof IconName } = ({
   style,
   ...props
 }) => {
-  const { d, viewBox } = getGlyph(iconName);
+  const { segments, viewBox, fillRule } = getGlyph(iconName);
   return (
     <svg
       className={`icon ${className}`}
@@ -229,7 +242,9 @@ const Icon: React.FC<IconProps> & { Name: typeof IconName } = ({
       style={color ? { color, ...style } : style}
       {...props}
     >
-      <path d={d} fill="currentColor" />
+      {segments.map((d, index) => (
+        <path key={index} d={d} fill="currentColor" fillRule={fillRule} />
+      ))}
     </svg>
   );
 };

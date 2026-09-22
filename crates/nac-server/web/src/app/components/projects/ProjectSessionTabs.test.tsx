@@ -70,9 +70,9 @@ describe("project session tab behavior identity", () => {
     );
 
     const expected = [
-      ["Plan the managed deployment rollout", "NAC orchestrator", "flow"],
+      ["Plan the managed deployment rollout", "NAC orchestrator", "orchestrator"],
       ["Implement connection status feedback", "Direct coding agent", "plane"],
-      ["Coordinate release readiness review", "Direct + NAC orchestration", "combine"],
+      ["Coordinate release readiness review", "Direct + NAC orchestration", "planeAdd"],
     ] as const;
 
     for (const [title, behavior, icon] of expected) {
@@ -102,7 +102,9 @@ describe("project session tab behavior identity", () => {
     const orchestrator = screen.getByRole("button", {
       name: "Plan the managed deployment rollout, NAC orchestrator",
     });
-    const orchestratorIcon = orchestrator.querySelector('[data-session-behavior-icon="flow"]');
+    const orchestratorIcon = orchestrator.querySelector(
+      '[data-session-behavior-icon="orchestrator"]',
+    );
     fireEvent.mouseEnter(orchestratorIcon!);
     expect(screen.getByText("NAC orchestrator").closest(".tooltip-box")).toBeTruthy();
     fireEvent.mouseLeave(orchestratorIcon!);
