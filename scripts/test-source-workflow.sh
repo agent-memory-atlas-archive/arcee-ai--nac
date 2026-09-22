@@ -19,6 +19,9 @@ help="$($MAKE -C "$ROOT" help 2>/dev/null)"
 for target in setup build dev run install-dev; do
   [[ "$help" == *"  $target"* ]] || fail "help omits $target"
 done
+run_recipe="$($MAKE -C "$ROOT" --no-print-directory --dry-run run RUN_BIND=127.0.0.1:4321)"
+[[ "$run_recipe" == *'./target/debug/nac-web --bind "127.0.0.1:4321"'* ]] || \
+  fail "RUN_BIND did not reach the production-equivalent binary"
 if "$MAKE" -C "$ROOT" -n demo >"$TMP/demo.out" 2>&1; then
   fail "removed demo target is still callable"
 fi

@@ -12,6 +12,7 @@ DEV_STORE_PATH ?=
 VITE_HOST ?= 127.0.0.1
 VITE_PORT ?= 5173
 DEV_OPEN ?= 1
+RUN_BIND ?= 127.0.0.1:3210
 DEV_INSTALL_DIR ?= $(HOME)/.local/bin
 DEV_BIN_NAME ?= nac-web-dev
 
@@ -50,7 +51,7 @@ dev:
 
 ## Build and run the production-equivalent embedded application
 run: build
-	./target/debug/$(BIN)
+	./target/debug/$(BIN) --bind "$(RUN_BIND)"
 
 ## Build and install this dev source under a deliberate non-stable name
 install-dev:

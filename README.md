@@ -103,7 +103,8 @@ make dev
 supervised together; Ctrl-C or either process failing stops the other. Use
 `make build` to rebuild the committed frontend bundle and compile the complete
 production-embedded debug application, then `make run` to build and run that
-production-equivalent application from the current checkout.
+production-equivalent application from the current checkout. Set
+`RUN_BIND=127.0.0.1:4321` when the default port is already in use.
 
 For day-to-day use without replacing a stable installation, install the source
 build under its development name:
