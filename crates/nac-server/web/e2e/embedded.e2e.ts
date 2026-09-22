@@ -653,6 +653,16 @@ test("asks for immutable behavior on every first and new chat", async ({
   await page.getByRole("button", { name: "Create chat" }).click();
   await expect(page.getByText("Immutable behavior")).toBeVisible();
   await expect(page.getByText("NAC orchestrator", { exact: true })).toBeVisible();
+  const orchestratorSessionId = page.url().match(/\/session\/([^/]+)\//)?.[1];
+  expect(orchestratorSessionId).toBeTruthy();
+  const orchestratorTitle = "Plan the managed deployment rollout";
+  const orchestratorPresentation = await request.put(
+    `${harness.baseUrl}/sessions/${orchestratorSessionId}/presentation`,
+    {
+      data: { title: orchestratorTitle, pinned: false, expected_version: 0 },
+    },
+  );
+  expect(orchestratorPresentation.ok()).toBe(true);
   await page.reload();
   await expect(page.getByText("NAC orchestrator", { exact: true })).toBeVisible();
   await expect(page.getByText("Threads", { exact: true })).toBeVisible();
@@ -668,6 +678,14 @@ test("asks for immutable behavior on every first and new chat", async ({
   await expect(page).toHaveURL(/\/session\/[^/]+\/delegated$/);
   const directSessionId = page.url().match(/\/session\/([^/]+)\//)?.[1];
   expect(directSessionId).toBeTruthy();
+  const directTitle = "Implement connection status feedback";
+  const directPresentation = await request.put(
+    `${harness.baseUrl}/sessions/${directSessionId}/presentation`,
+    {
+      data: { title: directTitle, pinned: false, expected_version: 0 },
+    },
+  );
+  expect(directPresentation.ok()).toBe(true);
   await expect(page.getByText("Direct coding agent", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText("Direct coding agent", { exact: true })).toBeVisible();
@@ -684,14 +702,77 @@ test("asks for immutable behavior on every first and new chat", async ({
   await page.getByRole("button", { name: "Create chat" }).click();
   await expect.poll(() => page.url()).not.toContain(`/session/${directSessionId}/`);
   await expect(page).toHaveURL(/\/session\/[^/]+\/delegated$/);
+  const hybridSessionId = page.url().match(/\/session\/([^/]+)\//)?.[1];
+  expect(hybridSessionId).toBeTruthy();
+  const hybridTitle = "Coordinate release readiness review";
+  const hybridPresentation = await request.put(
+    `${harness.baseUrl}/sessions/${hybridSessionId}/presentation`,
+    {
+      data: { title: hybridTitle, pinned: false, expected_version: 0 },
+    },
+  );
+  expect(hybridPresentation.ok()).toBe(true);
   await expect(page.getByText("Direct + NAC orchestration", { exact: true })).toBeVisible();
   await expect(page.getByText("NAC orchestrators", { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.reload();
   await expect(page.getByText("Direct + NAC orchestration", { exact: true })).toBeVisible();
   await expect(page.getByText("Coding agents", { exact: true })).toBeVisible();
   await expect(page.getByText("NAC orchestrators", { exact: true })).toBeVisible();
 
-  const tabs = page.locator(".chat-session-tab button");
+  const tabs = page.locator(".chat-session-tab > button:first-child");
+  for (const [title, behavior] of [
+    [orchestratorTitle, "NAC orchestrator"],
+    [directTitle, "Direct coding agent"],
+    [hybridTitle, "Direct + NAC orchestration"],
+  ] as const) {
+    await expect(page.getByRole("button", { name: `${title}, ${behavior}` })).toHaveAttribute(
+      "title",
+      title,
+    );
+  }
+  const widths = await page
+    .locator(".chat-session-tab")
+    .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().width));
+  expect(widths).toHaveLength(3);
+  for (const width of widths) {
+    expect(width).toBeGreaterThanOrEqual(223);
+    expect(width).toBeLessThanOrEqual(273);
+  }
+  await page.evaluate(() => {
+    const browser = globalThis as unknown as { document: { fonts: { ready: Promise<unknown> } } };
+    return browser.document.fonts.ready;
+  });
+  if (process.env.NAC_ALL97_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.NAC_ALL97_SCREENSHOT,
+      animations: "disabled",
+    });
+  }
+
+  const hybridTab = page.getByRole("button", {
+    name: `${hybridTitle}, Direct + NAC orchestration`,
+  });
+  const hybridTabRoot = hybridTab.locator("..");
+  const hybridClose = page.getByRole("button", { name: `Close ${hybridTitle}` });
+  await hybridTabRoot.hover();
+  await expect(hybridClose).toBeVisible();
+  const hoverBadgeBox = await hybridTab.locator("[data-session-tab-badge]").boundingBox();
+  const hoverCloseBox = await hybridClose.boundingBox();
+  expect(hoverBadgeBox).toBeTruthy();
+  expect(hoverCloseBox).toBeTruthy();
+  expect(hoverBadgeBox!.x + hoverBadgeBox!.width).toBeLessThanOrEqual(hoverCloseBox!.x);
+
+  await hybridTab.focus();
+  await page.keyboard.press("Tab");
+  await expect(hybridClose).toBeFocused();
+  await expect(hybridClose).toBeVisible();
+  const focusBadgeBox = await hybridTab.locator("[data-session-tab-badge]").boundingBox();
+  const focusCloseBox = await hybridClose.boundingBox();
+  expect(focusBadgeBox).toBeTruthy();
+  expect(focusCloseBox).toBeTruthy();
+  expect(focusBadgeBox!.x + focusBadgeBox!.width).toBeLessThanOrEqual(focusCloseBox!.x);
+
   await expect(tabs.filter({ has: page.getByText("Orchestrator", { exact: true }) })).toHaveCount(
     1,
   );

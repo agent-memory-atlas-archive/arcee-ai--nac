@@ -52,11 +52,11 @@ function session(
 afterEach(cleanup);
 
 describe("project session tab behavior identity", () => {
-  it("keeps every behavior identifiable in the compact tab strip", () => {
+  it("keeps flexible tabs readable and every behavior identifiable", () => {
     const sessions = [
-      session("orchestrator", "Plan", "orchestrator"),
-      session("direct", "Code", "direct"),
-      session("hybrid", "Coordinate", "direct-with-orchestrator"),
+      session("orchestrator", "Plan the managed deployment rollout", "orchestrator"),
+      session("direct", "Implement connection status feedback", "direct"),
+      session("hybrid", "Coordinate release readiness review", "direct-with-orchestrator"),
     ];
     render(
       <MemoryRouter>
@@ -69,14 +69,35 @@ describe("project session tab behavior identity", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("button", { name: "Plan, NAC orchestrator" })).toBeTruthy();
+    const expected = [
+      ["Plan the managed deployment rollout", "NAC orchestrator"],
+      ["Implement connection status feedback", "Direct coding agent"],
+      ["Coordinate release readiness review", "Direct + NAC orchestration"],
+    ] as const;
+
+    for (const [title, behavior] of expected) {
+      const tab = screen.getByRole("button", { name: `${title}, ${behavior}` });
+      expect(tab.getAttribute("title")).toBe(title);
+      expect(tab.closest(".chat-session-tab")?.className).toContain("w-full");
+      const slot = tab.closest(".chat-session-tab")?.parentElement;
+      expect(slot?.className).toContain("flex-[1_0_224px]");
+      expect(slot?.className).toContain("min-w-[224px]");
+      expect(slot?.className).toContain("max-w-[272px]");
+      expect(screen.getByRole("button", { name: `Close ${title}` })).toBeTruthy();
+    }
+
+    const active = screen.getByRole("button", {
+      name: "Implement connection status feedback, Direct coding agent",
+    });
+    expect(active.getAttribute("aria-current")).toBe("page");
+    expect(active.className).toContain("group-hover:pr-8");
+    expect(active.className).toContain("group-has-[:focus-visible]:pr-8");
     expect(
       screen
-        .getByRole("button", { name: "Code, Direct coding agent" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-    expect(
-      screen.getByRole("button", { name: "Coordinate, Direct + NAC orchestration" }),
-    ).toBeTruthy();
+        .getByRole("button", {
+          name: "Coordinate release readiness review, Direct + NAC orchestration",
+        })
+        .querySelector("[data-session-tab-badge]")?.className,
+    ).toContain("max-w-[88px]");
   });
 });

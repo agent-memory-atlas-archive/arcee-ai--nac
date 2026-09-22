@@ -35,6 +35,11 @@ import {
 } from "@/app/store/chatTabsStore";
 import type { ManagedSessionSummary, SessionSummarySnapshot } from "@/app/types/api";
 
+// Three or more tabs should trade unused width for readable names, then stop
+// shrinking at 224px and let the existing one-row strip scroll. The 272px cap
+// keeps one or two tabs from becoming visually detached from their content.
+const SESSION_TAB_SLOT_CLASS = "w-auto flex-[1_0_224px] min-w-[224px] max-w-[272px]";
+
 /** Which side of the tab under the pointer the dragged one would land on. */
 function edgeUnderPointer(element: HTMLElement, clientX: number): DropEdge {
   const rect = element.getBoundingClientRect();
@@ -97,9 +102,9 @@ export function ProjectSessionTabs({
         aria-label="Loading chats"
       >
         {leading}
-        <div className="flex items-start gap-2 flex-1 min-w-0 overflow-x-auto overflow-y-clip [&>*]:shrink-0">
-          <ChatSessionTabSkeleton />
-          <ChatSessionTabSkeleton />
+        <div className="flex flex-1 min-w-0 items-start gap-2 overflow-x-auto overflow-y-clip">
+          <ChatSessionTabSkeleton className={SESSION_TAB_SLOT_CLASS} />
+          <ChatSessionTabSkeleton className={SESSION_TAB_SLOT_CLASS} />
         </div>
       </div>
     );
@@ -195,11 +200,15 @@ export function ProjectSessionTabs({
     <div className="flex items-center gap-3 px-2 border-b border-b-tertiary">
       {leading ? <div className="flex items-center shrink-0">{leading}</div> : null}
       {/* Horizontal only: the strip is one row and must never grow taller. */}
-      <div className="flex items-start gap-2 flex-1 min-w-0 overflow-x-auto overflow-y-clip [&>*]:shrink-0">
+      <div
+        data-session-tab-strip
+        className="flex flex-1 min-w-0 items-start gap-2 overflow-x-auto overflow-y-clip"
+      >
         {empty ? (
           <ChatSessionTab
             title={NEW_CHAT_TITLE}
             active
+            className={SESSION_TAB_SLOT_CLASS}
             onClick={() => void projectActions.newChat(projectId)}
           />
         ) : (
@@ -209,7 +218,11 @@ export function ProjectSessionTabs({
             return (
               <div
                 key={sessionId}
-                className={cn("relative", dragging === sessionId && "opacity-40")}
+                className={cn(
+                  "relative",
+                  SESSION_TAB_SLOT_CLASS,
+                  dragging === sessionId && "opacity-40",
+                )}
                 draggable={reorderable}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "move";
@@ -256,6 +269,7 @@ export function ProjectSessionTabs({
                   active={sessionId === activeSessionId}
                   running={isActiveRun(entry.active_run)}
                   forkedFromTitle={entry.summary.forked_from?.title}
+                  className="w-full"
                   onClick={() => navigate(routes.session(sessionId))}
                   onDismiss={() => closeTab(sessionId)}
                 />
