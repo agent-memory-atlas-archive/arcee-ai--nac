@@ -213,6 +213,7 @@ fn assert_local_refs_resolve(document: &serde_json::Value, value: &serde_json::V
 
 #[tokio::test]
 async fn openapi_document_matches_the_running_api_router() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("openapi_contract");
     let app = router(test_manager(&root));
     let response = app

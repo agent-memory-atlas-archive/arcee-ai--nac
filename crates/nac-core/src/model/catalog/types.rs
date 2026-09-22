@@ -25,6 +25,8 @@ pub enum ApiKind {
 /// Thinking/reasoning control dialect for OpenAI-completions-family providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionsThinkingFormat {
+    /// OpenAI Chat Completions' bare `reasoning_effort` field.
+    OpenAi,
     /// `thinking: {"type": "enabled"|"disabled"}` plus `reasoning_effort`.
     Deepseek,
     /// `reasoning_effort` plus `reasoning_history`.
@@ -36,6 +38,14 @@ pub enum CompletionsThinkingFormat {
     /// Used by arcee, which passes through to underlying models but
     /// rejects `thinking`, `reasoning_history`, and `chat_template_kwargs`.
     Arcee,
+}
+
+/// An explicitly configured output-token field for Chat Completions.
+/// Catalog output limits are metadata and never populate this policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionsTokenLimit {
+    Modern(u64),
+    Legacy(u64),
 }
 
 /// Per-api quirk data; drives the consolidated completions builder/parser in
@@ -51,6 +61,12 @@ pub struct Compat {
     /// Explicit `temperature` to send on completions-family requests; `None`
     /// omits the field (DeepSeek).
     pub completions_temperature: Option<f64>,
+    /// Optional OpenAI streaming usage extension.
+    pub completions_include_stream_usage: bool,
+    /// Optional parallel-tool extension.
+    pub completions_parallel_tool_calls: bool,
+    /// Deliberate generation cap. Never derived from catalog `max_tokens`.
+    pub completions_token_limit: Option<CompletionsTokenLimit>,
 }
 
 /// Effort levels a model accepts, mapped to provider wire values.

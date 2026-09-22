@@ -16,7 +16,7 @@ const OUT_DIR = path.resolve(__dirname, "../assets/dist");
 const BASE = "/assets/dist/";
 
 // Prefixes owned by the axum API router; everything else is frontend.
-const API_PREFIXES = [
+export const API_PREFIXES = [
   "/health",
   "/store",
   "/sessions",
@@ -32,8 +32,14 @@ const API_PREFIXES = [
   "/models",
   "/commands",
   "/mcp_library",
+  "/managed",
+  "/__managed",
 ];
 const API_TARGET = process.env.NAC_API_URL ?? "http://127.0.0.1:3210";
+
+export function apiProxy(target: string) {
+  return Object.fromEntries(API_PREFIXES.map((prefix) => [prefix, { target, changeOrigin: true }]));
+}
 
 // MathJax's CHTML output does not embed its glyphs; it emits `@font-face` rules
 // pointing at a directory it is told about, so those fonts have to be served
@@ -176,9 +182,7 @@ export default defineConfig(({ command }) => {
     server: {
       port: 5173,
       strictPort: true,
-      proxy: Object.fromEntries(
-        API_PREFIXES.map((prefix) => [prefix, { target: API_TARGET, changeOrigin: true }]),
-      ),
+      proxy: apiProxy(API_TARGET),
     },
     build: {
       outDir: OUT_DIR,

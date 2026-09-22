@@ -81,8 +81,4 @@ url = "https://mcp.grep.app"
 # args = ["-y", "some-mcp-server"]
 # env = { "API_TOKEN" = "${API_TOKEN}" }
 
-# Extra hosts allowed to receive API-key credentials as base_url. Only this
-# file can widen the set; the HTTP API cannot.
-# [security]
-# trusted_base_url_hosts = ["my-proxy.example"]
 ```

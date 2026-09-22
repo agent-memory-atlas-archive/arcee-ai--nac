@@ -10,6 +10,8 @@ pub enum BackendKind {
     TogetherChat,
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
+    #[serde(rename = "openai-chat-completions")]
+    OpenAiChatCompletions,
     #[serde(rename = "chatgpt-codex-responses")]
     ChatGptCodexResponses,
     #[serde(rename = "anthropic-messages")]
@@ -19,7 +21,7 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-    pub const SUPPORTED: &'static str = "deepseek-chat, fireworks-chat, together-chat, openai-responses, chatgpt-codex-responses, anthropic-messages, arcee-auth, arcee-api";
+    pub const SUPPORTED: &'static str = "deepseek-chat, fireworks-chat, together-chat, openai-responses, openai-chat-completions, chatgpt-codex-responses, anthropic-messages, arcee-auth, arcee-api";
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -27,6 +29,7 @@ impl BackendKind {
             Self::FireworksChat => "fireworks-chat",
             Self::TogetherChat => "together-chat",
             Self::OpenAiResponses => "openai-responses",
+            Self::OpenAiChatCompletions => "openai-chat-completions",
             Self::ChatGptCodexResponses => "chatgpt-codex-responses",
             Self::AnthropicMessages => "anthropic-messages",
             Self::ArceeAuth => "arcee-auth",
@@ -54,6 +57,7 @@ impl std::str::FromStr for BackendKind {
             "fireworks-chat" => Ok(Self::FireworksChat),
             "together-chat" => Ok(Self::TogetherChat),
             "openai-responses" => Ok(Self::OpenAiResponses),
+            "openai-chat-completions" => Ok(Self::OpenAiChatCompletions),
             "chatgpt-codex-responses" => Ok(Self::ChatGptCodexResponses),
             "anthropic-messages" => Ok(Self::AnthropicMessages),
             "arcee-auth" => Ok(Self::ArceeAuth),
@@ -198,7 +202,7 @@ pub(super) fn allows_plaintext_transport(host: &url::Host<&str>) -> bool {
 /// Materialize and validate the base URL after the effective backend has been
 /// selected. A caller-supplied value is always authoritative (and is never
 /// replaced when invalid); genuine absence falls to the provider's catalog
-/// endpoint default (the five models.dev providers and arcee-api), then the
+/// endpoint default (the six models.dev-backed projections and arcee-api), then the
 /// managed canonical URL. Every current backend carries a default, so the
 /// missing-setting error is unreachable in practice (kept for future
 /// providers).
@@ -207,7 +211,15 @@ pub fn resolve_model_base_url(backend: BackendKind, base_url: Option<String>) ->
         .or_else(|| catalog::default_base_url(backend))
         .or_else(|| managed_backend_base_url(backend).map(str::to_string));
     let base_url = required_nonblank_setting(base_url, "base_url")?;
-    let parsed = Url::parse(&base_url).map_err(|error| {
+    validate_model_base_url(&base_url)?;
+    Ok(base_url)
+}
+
+/// Validate the credential-independent hygiene shared by every explicit model
+/// endpoint. This does not resolve defaults, credentials, or provider-specific
+/// origin binding.
+pub fn validate_model_base_url(base_url: &str) -> Result<()> {
+    let parsed = Url::parse(base_url).map_err(|error| {
         model_configuration_error(format!(
             "invalid model configuration: base_url '{base_url}' is not a valid absolute URL: {error}"
         ))
@@ -232,7 +244,7 @@ pub fn resolve_model_base_url(backend: BackendKind, base_url: Option<String>) ->
             "invalid model configuration: base_url '{base_url}' requires HTTPS; plaintext HTTP is accepted only for loopback and private-network hosts"
         )));
     }
-    Ok(base_url)
+    Ok(())
 }
 
 impl EffectiveModelSettings {

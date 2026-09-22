@@ -163,6 +163,7 @@ pub fn validate_model_configuration(
         | BackendKind::FireworksChat
         | BackendKind::TogetherChat
         | BackendKind::OpenAiResponses
+        | BackendKind::OpenAiChatCompletions
         | BackendKind::AnthropicMessages => {
             api_key_for_backend(backend, api_key_env)?;
         }
@@ -469,7 +470,21 @@ impl ModelClient {
         tools: Vec<ToolDefinition>,
         on_delta: DeltaSink<'_>,
     ) -> Result<ModelTurnResponse> {
-        let compat = &self.resolved_model.compat;
+        let mut effective_compat = self.resolved_model.compat.clone();
+        if self.backend == BackendKind::OpenAiChatCompletions
+            && providers::provider_default_base_url(self.backend).is_none_or(|official| {
+                self.base_url.trim_end_matches('/') != official.trim_end_matches('/')
+            })
+        {
+            // A known OpenAI model may be routed through an arbitrary
+            // compatible endpoint. Keep explicitly selected controls (such as
+            // reasoning effort or a token-limit override), but do not assume
+            // the endpoint implements OpenAI's optional streaming/tool
+            // extensions merely because the model id is familiar.
+            effective_compat.completions_include_stream_usage = false;
+            effective_compat.completions_parallel_tool_calls = false;
+        }
+        let compat = &effective_compat;
         // Trinity's vLLM front end needs its own assistant-message shape; the
         // quirk rides the provider axis, like the URL join right below.
         let arcee = matches!(self.backend, BackendKind::ArceeAuth | BackendKind::ArceeApi);
@@ -490,8 +505,21 @@ impl ModelClient {
         // model. A synthetic provider-default value (the 16k fallback) would
         // silently truncate models whose true limit the provider knows
         // better than we do (issue #124).
-        if self.resolved_model.source.is_authoritative() {
+        if self.backend != BackendKind::OpenAiChatCompletions
+            && self.resolved_model.source.is_authoritative()
+        {
             request["max_tokens"] = json!(self.resolved_model.max_tokens.min(262_144));
+        }
+        if self.backend == BackendKind::OpenAiChatCompletions {
+            match compat.completions_token_limit {
+                Some(CompletionsTokenLimit::Modern(limit)) => {
+                    request["max_completion_tokens"] = json!(limit);
+                }
+                Some(CompletionsTokenLimit::Legacy(limit)) => {
+                    request["max_tokens"] = json!(limit);
+                }
+                None => {}
+            }
         }
         if self.backend == BackendKind::TogetherChat {
             request["context_length_exceeded_behavior"] = json!("truncate");
@@ -502,7 +530,7 @@ impl ModelClient {
                     .map_err(classify_model_configuration_error)?
                     .to_string()
             }
-            _ => format!("{}/chat/completions", self.base_url),
+            _ => format!("{}/chat/completions", self.base_url.trim_end_matches('/')),
         };
         let reasoning_field = compat
             .completions_reasoning_field
@@ -516,8 +544,14 @@ impl ModelClient {
                     .await?
             }
             _ => {
-                self.post_chat_completions(url.as_str(), request, reasoning_field, on_delta)
-                    .await?
+                self.post_chat_completions(
+                    url.as_str(),
+                    request,
+                    reasoning_field,
+                    compat.completions_include_stream_usage,
+                    on_delta,
+                )
+                .await?
             }
         };
         let mut response = parse_completions_response(&value, url.as_str(), reasoning_field)?;
@@ -535,6 +569,7 @@ impl ModelClient {
         url: &str,
         mut request: Value,
         reasoning_field: &str,
+        include_stream_usage: bool,
         on_delta: DeltaSink<'_>,
     ) -> Result<Value> {
         // Arcee-api uses Bearer auth but carries no client identity in the key,
@@ -552,7 +587,9 @@ impl ModelClient {
             return self.post_json_with_retry(url, &request).await;
         }
         request["stream"] = Value::Bool(true);
-        request["stream_options"] = json!({"include_usage": true});
+        if include_stream_usage {
+            request["stream_options"] = json!({"include_usage": true});
+        }
         let api_key = self.api_key.as_str();
         self.post_sse_with_retry_headers(
             url,

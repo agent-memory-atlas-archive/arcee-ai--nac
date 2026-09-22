@@ -69,16 +69,15 @@ pub use arcee_bootstrap::{
     validate_managed_arcee_authorization_for_issuer, ManagedArceeBootstrapOutcome,
     MANAGED_ARCEE_BOOTSTRAP_PATH,
 };
-pub use backend::{
-    validate_backend_api_key_env, validate_caller_supplied_base_url,
-    validate_model_reasoning_effort,
-};
+pub use backend::{validate_backend_api_key_env, validate_model_reasoning_effort};
 pub(crate) use catalog::resolve as resolve_model_metadata;
 pub use catalog::{
-    api_listing, provider_for_model, spawn_anthropic_model_refresh, spawn_arcee_model_refresh,
-    spawn_overlay_refresh, AuthStatus, ModelListing, ProviderConnection,
+    api_listing, api_listing_for_invocation, provider_for_model, spawn_anthropic_model_refresh,
+    spawn_arcee_model_refresh, spawn_overlay_refresh, AuthStatus, ModelListing, ProviderConnection,
 };
-pub(crate) use catalog::{Compat, CompletionsThinkingFormat, ModelMetadata, ThinkingLevelMap};
+pub(crate) use catalog::{
+    Compat, CompletionsThinkingFormat, CompletionsTokenLimit, ModelMetadata, ThinkingLevelMap,
+};
 pub use providers::{
     list_managed_provider_models, list_provider_models, provider_default_base_url,
     provider_uses_api_key, ProviderModel,
@@ -124,8 +123,8 @@ pub(crate) use types::{
     calculate_cost, AssistantTurn, ModelTurnResponse, TokenCostMicros, TokenUsage,
 };
 pub use types::{
-    managed_backend_base_url, resolve_model_base_url, EffectiveModelSettings,
-    ARCEE_AUTH_CANONICAL_BASE_URL, CHATGPT_CODEX_CANONICAL_BASE_URL,
+    managed_backend_base_url, resolve_model_base_url, validate_model_base_url,
+    EffectiveModelSettings, ARCEE_AUTH_CANONICAL_BASE_URL, CHATGPT_CODEX_CANONICAL_BASE_URL,
 };
 pub use types::{BackendKind, DispatchWeight, ReasoningEffort};
 

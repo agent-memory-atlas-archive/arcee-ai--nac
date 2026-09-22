@@ -1,6 +1,6 @@
 # Model configuration
 
-Config lives at `~/.config/nac/config.toml`, or at `$NAC_HOME/config.toml` when `NAC_HOME` is set. A new session merges explicit CLI or web launch values over `[model]` in that file. `[model]` keeps only `model`, `reasoning_effort`, and `extra_headers`; the removed `backend`, `base_url`, and `api_key_env` keys in an older config are ignored with a one-time warning. The resulting `backend` and `model` must be present and nonblank before the session is created: the backend is explicit or resolved from the model id through the catalog (a unique exact match wins; a collision prefers the non-managed provider with a warning; an unknown id stays unresolved). An absent `base_url` materializes from the catalog's provider endpoint default — the five models.dev providers and `arcee-api` carry one, and the managed `chatgpt-codex-responses` and `arcee-auth` backends use their fixed canonical URLs. A present value is validated rather than replaced.
+Config lives at `~/.config/nac/config.toml`, or at `$NAC_HOME/config.toml` when `NAC_HOME` is set. A new session merges explicit CLI or web launch values over `[model]` in that file. `[model]` keeps only `model`, `reasoning_effort`, and `extra_headers`; the removed `backend`, `base_url`, and `api_key_env` keys in an older config are ignored with a one-time warning. The resulting `backend` and `model` must be present and nonblank before the session is created: the backend is explicit or resolved from the model id through the catalog. Model-only OpenAI inference remains `openai-responses` even though official OpenAI metadata is also presented under `openai-chat-completions`; selecting Chat Completions is always explicit. An unknown id therefore needs an explicit backend, but never needs catalog membership. An absent `base_url` materializes from the selected provider's endpoint default; a present value is validated rather than replaced.
 
 Model selection is config-first, not environment-driven:
 
@@ -41,7 +41,7 @@ Before each ordinary model call, a session-backed orchestrator automatically com
 
 ## API-key selection
 
-The API-key backends are `openai-responses`, `together-chat`, `anthropic-messages`, `deepseek-chat`, `fireworks-chat`, and `arcee-api`. Each resolves its credential selector (`api_key_env`, the NAME of the one environment variable NAC may read) as follows:
+The API-key backends are `openai-responses`, `openai-chat-completions`, `together-chat`, `anthropic-messages`, `deepseek-chat`, `fireworks-chat`, and `arcee-api`. Each resolves its credential selector (`api_key_env`, the NAME of the one environment variable NAC may read) as follows:
 
 - An explicit per-session `api_key_env` override always wins. The selector must match `[A-Za-z_][A-Za-z0-9_]*` exactly. NAC does not trim or rewrite it.
 - With no explicit selector, NAC auto-selects the provider's conventional variable (`OPENAI_API_KEY`, `TOGETHER_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `FIREWORKS_API_KEY`, or `ARCEE_API_KEY`) when it exists in the environment, and persists the selected name into the session.
@@ -54,10 +54,16 @@ The API-key backends are `openai-responses`, `together-chat`, `anthropic-message
 
 NAC never supplies a reasoning effort unless one is explicitly configured or launched. Supported explicit values depend on the selected wire backend and, for Anthropic, the model family:
 
-- `openai-responses` and `chatgpt-codex-responses`: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+- Known official OpenAI models on `openai-responses`, `openai-chat-completions`, and `chatgpt-codex-responses`: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Unknown Chat Completions models start with no optional reasoning controls; add an explicit catalog override only when the endpoint supports them.
 - `deepseek-chat`: `none`, `high`, or `xhigh`.
 - `fireworks-chat` and `together-chat`: `none`, `low`, `medium`, or `high`.
 - `anthropic-messages`: `none` sends no thinking controls. Claude Opus 4.6 and Sonnet 4.6 families, including dated snapshots, accept `low`, `medium`, and `high`; only Opus 4.6 also accepts `xhigh`, which maps to Anthropic `max`. Other Anthropic model names accept only `none`.
 - `arcee-auth` and `arcee-api`: no explicit effort value is accepted; clear the setting.
 
 Unsupported backend/model combinations are rejected before persistence or request dispatch.
+
+## OpenAI Chat Completions
+
+`openai-chat-completions` is the explicit protocol for the official OpenAI Chat Completions API and arbitrary compatible gateways. Its default is `https://api.openai.com/v1`, inference uses `POST <base_url>/chat/completions`, and model discovery is a best-effort `GET <base_url>/models`. A discovery error or an incomplete list is shown as a diagnostic but does not invalidate a manually entered model id. Unknown endpoints/models use a conservative request body: NAC omits OpenAI-only optional extensions unless catalog policy explicitly enables them.
+
+Chat Completions sends neither `max_completion_tokens` nor legacy `max_tokens` by default. Catalog `max_tokens` remains metadata for context planning, display, and cost; it is never converted into a generation cap for this backend. A `$NAC_HOME/models.json` override may set `max_completion_tokens` for a deliberate modern cap, or `legacy_max_tokens` for a gateway that requires the old request field. They are mutually exclusive.

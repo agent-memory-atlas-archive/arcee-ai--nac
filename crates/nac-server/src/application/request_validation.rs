@@ -2,11 +2,8 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
 use nac_core::{
-    model::{
-        managed_backend_base_url, resolve_model_base_url, validate_caller_supplied_base_url,
-        BackendKind, ReasoningEffort,
-    },
-    runtime::{CredentialDestinationPolicy, ModelOptions, OptionalModelOption, SandboxOptions},
+    model::{managed_backend_base_url, resolve_model_base_url, BackendKind, ReasoningEffort},
+    runtime::{ModelOptions, OptionalModelOption, SandboxOptions},
     sessions,
 };
 use serde::Deserialize;
@@ -129,25 +126,6 @@ pub(crate) fn model_options(
         extra_headers,
         light_model: None,
     })
-}
-
-/// Reject a credential destination that only the HTTP request asked for.
-///
-/// `config.toml` is hand-edited and therefore authoritative; a request body
-/// reaching the unauthenticated loopback API is not, so it may only name a
-/// known provider origin, a local address, or a pre-approved host.
-pub(crate) fn enforce_trusted_base_url(
-    backend: Option<BackendKind>,
-    base_url: Option<&str>,
-    policy: &CredentialDestinationPolicy,
-) -> Result<()> {
-    let (Some(backend), Some(base_url)) = (backend, base_url) else {
-        return Ok(());
-    };
-    if policy.configured_base_url.as_deref() == Some(base_url) {
-        return Ok(());
-    }
-    validate_caller_supplied_base_url(backend, base_url, &policy.trusted_hosts)
 }
 
 pub(crate) fn parse_prospective_model_config(

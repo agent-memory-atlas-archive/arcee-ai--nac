@@ -13,6 +13,7 @@ pub(crate) fn api_key_backend(backend: BackendKind) -> bool {
             | BackendKind::FireworksChat
             | BackendKind::TogetherChat
             | BackendKind::OpenAiResponses
+            | BackendKind::OpenAiChatCompletions
             | BackendKind::AnthropicMessages
             | BackendKind::ArceeApi
     )
@@ -103,73 +104,6 @@ pub(crate) fn validate_model_reasoning_effort_with_map(
     Err(model_configuration_error(format!(
         "invalid model configuration: reasoning effort '{}' is not supported by backend '{}'; supported values: {}",
         effort.as_str(), backend, allowed
-    )))
-}
-
-/// Provider origins NAC will send an API key to without an operator opt-in.
-///
-/// Arcee and Codex are absent because they enforce their own origin policies
-/// before a credential is attached.
-fn builtin_provider_hosts(backend: BackendKind) -> &'static [&'static str] {
-    match backend {
-        BackendKind::OpenAiResponses => &["api.openai.com"],
-        BackendKind::AnthropicMessages => &["api.anthropic.com"],
-        BackendKind::DeepSeekChat => &["api.deepseek.com"],
-        BackendKind::TogetherChat => &["api.together.xyz"],
-        BackendKind::FireworksChat => &["api.fireworks.ai"],
-        BackendKind::ArceeApi | BackendKind::ArceeAuth | BackendKind::ChatGptCodexResponses => &[],
-    }
-}
-
-fn normalized_host(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
-}
-
-/// Reject a base URL that would send an API key to an origin the operator
-/// never approved.
-///
-/// This is the trust boundary for values arriving over the unauthenticated
-/// loopback HTTP API: `config.toml` is edited by hand and is therefore
-/// authoritative, while a request body is not. Loopback and private-network
-/// hosts stay usable without an opt-in so local proxies keep working.
-pub fn validate_caller_supplied_base_url(
-    backend: BackendKind,
-    base_url: &str,
-    trusted_hosts: &[String],
-) -> Result<()> {
-    let approved_hosts = builtin_provider_hosts(backend);
-    if approved_hosts.is_empty() {
-        return Ok(());
-    }
-
-    let parsed = Url::parse(base_url).map_err(|error| {
-        model_configuration_error(format!(
-            "invalid model configuration: base_url '{base_url}' is not a valid absolute URL: {error}"
-        ))
-    })?;
-    let host = parsed.host().ok_or_else(|| {
-        model_configuration_error(format!(
-            "invalid model configuration: base_url '{base_url}' must include a host"
-        ))
-    })?;
-    if types::allows_plaintext_transport(&host) {
-        return Ok(());
-    }
-
-    let host = normalized_host(parsed.host_str().unwrap_or_default());
-    if approved_hosts.contains(&host.as_str())
-        || trusted_hosts
-            .iter()
-            .any(|trusted| normalized_host(trusted.trim()) == host)
-    {
-        return Ok(());
-    }
-
-    Err(model_configuration_error(format!(
-        "invalid model configuration: base_url host '{}' is not approved for backend '{}'; approved hosts are {}, and any other host must be listed under [security] trusted_base_url_hosts in config.toml before NAC sends credentials to it",
-        host,
-        backend,
-        approved_hosts.join(", ")
     )))
 }
 
