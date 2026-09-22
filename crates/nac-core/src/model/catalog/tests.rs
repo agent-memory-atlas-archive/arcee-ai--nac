@@ -387,7 +387,12 @@ fn openai_catalog_fans_out_known_models_but_keeps_unknown_chat_conservative() {
 
     let unknown = resolve(BackendKind::OpenAiChatCompletions, "custom-unknown-model");
     assert_eq!(unknown.source, ModelSource::ProviderDefault);
-    assert_eq!(unknown.compat, Compat::default());
+    assert_eq!(
+        unknown.compat.completions_thinking_format,
+        Some(CompletionsThinkingFormat::OpenAi)
+    );
+    assert!(unknown.compat.completions_include_stream_usage);
+    assert!(unknown.compat.completions_parallel_tool_calls);
     assert!(unknown.thinking_level_map.supported_efforts().is_empty());
 
     let settings = EffectiveModelSettings::from_optional(

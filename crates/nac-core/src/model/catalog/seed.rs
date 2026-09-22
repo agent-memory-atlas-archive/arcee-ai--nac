@@ -113,6 +113,7 @@ fn completions_compat(
         completions_thinking_format: thinking_format,
         completions_reasoning_field: Some(reasoning_field.to_string()),
         completions_temperature: temperature,
+        completions_include_stream_usage: true,
         ..Compat::default()
     }
 }
@@ -512,7 +513,7 @@ pub(super) fn seed_catalog() -> ModelCatalog {
             PROVIDER_DEFAULT_MODEL_ID,
             false,
             ThinkingLevelMap::default(),
-            Compat::default(),
+            openai_chat_completions_compat(),
         ),
         &[],
         None,

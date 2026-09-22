@@ -22,14 +22,14 @@ fn fresh_home(label: &str) -> PathBuf {
 
 /// Temp home for layered-load tests that never touch the environment or
 /// the process-global catalog.
-pub(super) struct TempHome(PathBuf);
+pub(crate) struct TempHome(PathBuf);
 
 impl TempHome {
-    pub(super) fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         Self(fresh_home(label))
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }

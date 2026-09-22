@@ -262,7 +262,10 @@ async fn openai_chat_custom_unknown_model_uses_portable_body_without_token_caps(
         client.resolved_model.source,
         catalog::ModelSource::ProviderDefault
     );
-    assert_eq!(client.resolved_model.compat, Compat::default());
+    assert_eq!(
+        client.resolved_model.compat.completions_thinking_format,
+        Some(CompletionsThinkingFormat::OpenAi)
+    );
 
     let tools = vec![ToolDefinition {
         def_type: "function".to_string(),
@@ -302,6 +305,112 @@ async fn openai_chat_custom_unknown_model_uses_portable_body_without_token_caps(
     ] {
         assert!(body.get(field).is_none(), "unexpected {field} in {body}");
     }
+}
+
+#[tokio::test]
+async fn established_completions_profiles_request_usage_on_streams() {
+    for backend in [
+        BackendKind::DeepSeekChat,
+        BackendKind::FireworksChat,
+        BackendKind::TogetherChat,
+    ] {
+        let server = ScriptedServer::start(vec![ScriptedResponse::json(
+            "200 OK",
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        )
+        .with_header("Content-Type", "text/event-stream")]);
+        let client = test_model_client(
+            backend,
+            server.base_url.clone(),
+            std::collections::BTreeMap::new(),
+        );
+        let sink = |_delta: crate::model::ModelStreamDelta| {};
+
+        client
+            .send_turn_streaming(
+                vec![Message::User {
+                    content: "hello".to_string(),
+                }],
+                vec![],
+                Some(&sink),
+            )
+            .await
+            .expect("established completions stream should parse");
+
+        let requests = server.finish();
+        let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+        assert_eq!(
+            body["stream_options"],
+            json!({"include_usage": true}),
+            "{backend}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn openai_chat_user_override_emits_unlocked_reasoning_effort() {
+    let home = catalog::test_support::TempHome::new("chat-unlocked-reasoning");
+    std::fs::write(
+        home.path().join("models.json"),
+        serde_json::to_string_pretty(&json!({
+            "overrides": [{
+                "provider": "openai-chat-completions",
+                "model": "gateway-reasoner",
+                "set": {
+                    "reasoning": true,
+                    "thinking_level_map": {"high": "high"}
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (catalog, warnings) = catalog::ModelCatalog::load_from_home(Some(home.path()));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let resolved = catalog.resolve(BackendKind::OpenAiChatCompletions, "gateway-reasoner");
+    assert_eq!(resolved.source, catalog::ModelSource::UserOverride);
+    assert_eq!(
+        resolved.compat.completions_thinking_format,
+        Some(CompletionsThinkingFormat::OpenAi)
+    );
+
+    let server = ScriptedServer::start(vec![ScriptedResponse::json(
+        "200 OK",
+        r#"{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+    )]);
+    let mut client = test_model_client(
+        BackendKind::OpenAiChatCompletions,
+        format!("{}/custom/v1", server.base_url),
+        std::collections::BTreeMap::new(),
+    );
+    client.model = "gateway-reasoner".to_string();
+    client.reasoning_effort = Some(ReasoningEffort::High);
+    client.resolved_model = resolved;
+    client
+        .send_turn(
+            vec![Message::User {
+                content: "hello".to_string(),
+            }],
+            vec![ToolDefinition {
+                def_type: "function".to_string(),
+                function: FunctionDef {
+                    name: "lookup".to_string(),
+                    description: "Look up a value".to_string(),
+                    parameters: json!({"type": "object", "properties": {}}),
+                },
+            }],
+        )
+        .await
+        .expect("user-unlocked reasoning request should parse");
+
+    let requests = server.finish();
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+    assert_eq!(body["reasoning_effort"], "high");
+    assert!(body.get("parallel_tool_calls").is_none(), "{body}");
+    assert!(body.get("stream_options").is_none(), "{body}");
 }
 
 #[tokio::test]

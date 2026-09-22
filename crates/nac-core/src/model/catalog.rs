@@ -37,7 +37,7 @@ mod overlay;
 mod overlay_tests;
 mod seed;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -269,7 +269,7 @@ impl ModelCatalog {
     /// this directly against temp homes, so they never touch the
     /// process-global catalog or the environment.
     #[cfg(test)]
-    fn load_from_home(home: Option<&Path>) -> (Self, Vec<CatalogWarning>) {
+    pub(crate) fn load_from_home(home: Option<&Path>) -> (Self, Vec<CatalogWarning>) {
         Self::load_layered(home, true)
     }
 
