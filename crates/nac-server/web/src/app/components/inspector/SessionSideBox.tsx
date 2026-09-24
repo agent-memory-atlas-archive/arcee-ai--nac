@@ -200,7 +200,12 @@ export function SessionSideBox({
         <WorksetsView snapshot={snapshot} selected={selectedWorkset} onSelect={selectWorkset} />
       ) : null}
       {active === "threads" ? (
-        <ThreadsView snapshot={snapshot} selected={selectedThread} onSelect={selectThread} />
+        <ThreadsView
+          snapshot={snapshot}
+          selected={selectedThread}
+          onSelect={selectThread}
+          canSteerWorkers={behavior === "orchestrator" && !delegatedTranscript}
+        />
       ) : null}
       {active === "history" ? (
         <HistoryView sessionId={sessionId} selected={selectedRevision} onSelect={selectRevision} />

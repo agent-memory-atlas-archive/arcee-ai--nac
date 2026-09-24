@@ -1218,6 +1218,57 @@ test("steers an active direct run from the ordinary composer", async ({
   expect(JSON.stringify(steeredRequest?.body)).toContain("change course safely");
 });
 
+test("steers an active classic orchestrator from the ordinary composer", async ({
+  harness,
+  page,
+  request,
+}) => {
+  const boundary = new ScriptGate();
+  const steeredBoundary = new ScriptGate();
+  harness.provider.enqueue(
+    "classic-active-boundary",
+    { token: "E2E_CLASSIC_STEER_TOKEN" },
+    {
+      kind: "function_call",
+      name: "unknown_alpha",
+      callId: "classic-steer-boundary-1",
+      arguments: {},
+      stream: true,
+    },
+    boundary,
+  );
+  harness.provider.enqueue(
+    "classic-steered-continuation",
+    { token: "retarget the active orchestrator" },
+    { kind: "text", text: "classic steering complete", stream: true },
+    steeredBoundary,
+  );
+  const sessionId = await createSession(request, harness, "orchestrator");
+  await page.goto(`${harness.baseUrl}/#/session/${sessionId}/threads`);
+
+  const composer = page.getByRole("combobox", { name: "Message" });
+  await composer.fill("E2E_CLASSIC_STEER_TOKEN");
+  await page.getByRole("button", { name: "Send" }).click();
+  await boundary.accepted;
+  await expect(page.getByRole("button", { name: "Stop run" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Queue Next" })).toHaveCount(0);
+
+  await composer.fill("retarget the active orchestrator");
+  await page.getByRole("button", { name: "Steer active run" }).click();
+  await expect(composer).toHaveValue("");
+
+  boundary.release();
+  await harness.provider.waitForRequestCount(2);
+  await steeredBoundary.accepted;
+  const steeredRequest = harness.provider.requests.find(
+    (entry) => entry.matchedStep === "classic-steered-continuation",
+  );
+  expect(JSON.stringify(steeredRequest?.body)).toContain("retarget the active orchestrator");
+  steeredBoundary.release();
+  await waitForRunIdle(request, harness, sessionId);
+  harness.provider.assertConsumed();
+});
+
 test("queues, edits, cancels pending input, and stops an active direct run", async ({
   harness,
   page,

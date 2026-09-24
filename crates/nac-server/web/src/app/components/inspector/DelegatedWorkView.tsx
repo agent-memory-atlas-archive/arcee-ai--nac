@@ -17,6 +17,7 @@ import {
   type DelegatedSessionPresentation,
 } from "@/app/features/delegation/model";
 import { DelegatedSessionRow } from "@/app/features/delegation/presentation/DelegatedSessionRow";
+import { SteeringPromptModal } from "@/app/components/inspector/SteeringPromptModal";
 import { toRunError } from "@/app/lib/providerError";
 import { routes } from "@/app/lib/routes";
 import { errorMessage, useToast } from "@/app/providers/ToastProvider";
@@ -187,42 +188,60 @@ export function DelegatedWorkView({
           )}
         </section>
       ) : null}
-      <Modal
-        open={selected != null}
-        onClose={() => setSelected(null)}
-        size={ModalSize.Wide}
-        title={
-          selected ? `${selected.canSteer ? "Steer" : "Continue"} ${selected.description}` : ""
-        }
-        subheader={
-          selected ? `${selected.typeLabel} · generation ${selected.generation}` : undefined
-        }
-      >
-        <div className="flex flex-col gap-4">
-          <TextArea
-            label={selected?.canSteer ? "Steering message" : "Continuation prompt"}
-            aria-label={selected?.canSteer ? "Steering message" : "Continuation prompt"}
-            textAreaSize={TextAreaSize.Medium}
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            textAreaClassName="h-[140px] resize-none"
-          />
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      {selected?.canSteer ? (
+        <SteeringPromptModal
+          open
+          title={`Steer ${selected.description}`}
+          subheader={`${selected.typeLabel} · generation ${selected.generation}`}
+          value={prompt}
+          submitting={startChild.isPending || startOrchestrator.isPending}
+          disabled={busy}
+          onChange={setPrompt}
+          onClose={() => setSelected(null)}
+          onSubmit={() => void submit()}
+          footerLeading={
             <label className="flex items-center gap-2 text-small text-basic-secondary">
               <Switch checked={background} disabled={busy} onChange={setBackground} />
               Run in background
             </label>
-            <Button
-              variant={ButtonVariant.Primary}
-              loading={startChild.isPending || startOrchestrator.isPending}
-              disabled={busy}
-              onClick={() => void submit()}
-            >
-              {selected?.canSteer ? "Send steering" : "Continue"}
-            </Button>
+          }
+        />
+      ) : (
+        <Modal
+          open={selected != null}
+          onClose={() => setSelected(null)}
+          size={ModalSize.Wide}
+          title={selected ? `Continue ${selected.description}` : ""}
+          subheader={
+            selected ? `${selected.typeLabel} · generation ${selected.generation}` : undefined
+          }
+        >
+          <div className="flex flex-col gap-4">
+            <TextArea
+              label="Continuation prompt"
+              aria-label="Continuation prompt"
+              textAreaSize={TextAreaSize.Medium}
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              textAreaClassName="h-[140px] resize-none"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-small text-basic-secondary">
+                <Switch checked={background} disabled={busy} onChange={setBackground} />
+                Run in background
+              </label>
+              <Button
+                variant={ButtonVariant.Primary}
+                loading={startChild.isPending || startOrchestrator.isPending}
+                disabled={busy}
+                onClick={() => void submit()}
+              >
+                Continue
+              </Button>
+            </div>
           </div>
-        </div>
-      </Modal>
+        </Modal>
+      )}
     </div>
   );
 }
