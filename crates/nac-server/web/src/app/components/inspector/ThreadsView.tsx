@@ -538,11 +538,15 @@ function ViewPills({
   onChange: (view: ThreadDetailView) => void;
 }) {
   return (
-    <div className="absolute inset-x-0 top-0 flex items-center gap-2 p-2">
+    <div
+      className="absolute inset-x-0 top-0 flex items-center gap-2 overflow-x-auto overscroll-x-contain p-2"
+      role="toolbar"
+      aria-label="Thread controls"
+    >
       {THREAD_DETAIL_VIEWS.map((name) => (
         <div
           key={name}
-          className="flex min-w-0 rounded-full bg-elevation-level-3 shadow-2xl overflow-hidden"
+          className="flex shrink-0 rounded-full bg-elevation-level-3 shadow-2xl overflow-hidden"
         >
           <Button
             className="w-full"

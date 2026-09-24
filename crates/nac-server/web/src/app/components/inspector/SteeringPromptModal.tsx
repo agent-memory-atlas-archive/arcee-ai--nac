@@ -25,8 +25,10 @@ export function SteeringPromptModal({
   onClose: () => void;
   onSubmit: () => void;
 }) {
+  const close = submitting ? undefined : onClose;
+
   return (
-    <Modal open={open} onClose={onClose} size={ModalSize.Wide} title={title} subheader={subheader}>
+    <Modal open={open} onClose={close} size={ModalSize.Wide} title={title} subheader={subheader}>
       <div className="flex flex-col gap-4">
         <TextArea
           label="Steering message"
@@ -34,6 +36,7 @@ export function SteeringPromptModal({
           textAreaSize={TextAreaSize.Medium}
           value={value}
           onChange={(event) => onChange(event.target.value)}
+          isDisabled={submitting}
           textAreaClassName="h-[140px] resize-none"
         />
         <div className="flex flex-wrap items-center justify-between gap-3">

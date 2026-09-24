@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -174,6 +174,53 @@ describe("classic worker steering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Steer" }));
     expect(screen.getByRole("textbox", { name: "Steering message" })).toHaveProperty("value", "");
+  });
+
+  it("locks the steering draft and dismissal while backend acceptance is pending", async () => {
+    const accepted = Promise.withResolvers<{
+      steering_id: number;
+      thread_name: string;
+      status: string;
+      instruction_preview: string;
+    }>();
+    steerThread.mockReturnValueOnce(accepted.promise);
+    mount();
+
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    const field = screen.getByRole("textbox", { name: "Steering message" });
+    fireEvent.change(field, { target: { value: "keep this exact draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send steering" }));
+
+    await waitFor(() => expect(field).toHaveProperty("disabled", true));
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("textbox", { name: "Steering message" })).toHaveProperty(
+      "value",
+      "keep this exact draft",
+    );
+
+    accepted.resolve({
+      steering_id: 9,
+      thread_name: "worker",
+      status: "queued",
+      instruction_preview: "keep this exact draft",
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Steering message" })).toBeNull(),
+    );
+  });
+
+  it("keeps all narrow-mobile thread controls in a horizontal scroll region", () => {
+    viewport.mobile = true;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    mount();
+
+    const controls = screen.getByRole("toolbar", { name: "Thread controls" });
+    expect(controls.className).toContain("overflow-x-auto");
+    expect(within(controls).getByRole("button", { name: "Command Log" })).toBeTruthy();
+    expect(within(controls).getByRole("button", { name: "Episodes" })).toBeTruthy();
+    expect(within(controls).getByRole("button", { name: "Task" })).toBeTruthy();
+    expect(within(controls).getByRole("button", { name: "Steer" })).toBeTruthy();
   });
 
   it("hides steering for pending, terminal, and read-only workers", () => {
