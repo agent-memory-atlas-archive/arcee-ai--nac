@@ -79,8 +79,8 @@ pub(crate) use catalog::{
     Compat, CompletionsThinkingFormat, CompletionsTokenLimit, ModelMetadata, ThinkingLevelMap,
 };
 pub use providers::{
-    list_managed_provider_models, list_provider_models, provider_default_base_url,
-    provider_uses_api_key, ProviderModel,
+    list_managed_provider_models, list_provider_models, list_provider_models_with_http_policy,
+    provider_default_base_url, provider_uses_api_key, ProviderModel,
 };
 pub(crate) use redact::{
     redact_credentials, redact_credentials_with_extra_headers, redact_json_body_with_extra_headers,
@@ -123,8 +123,9 @@ pub(crate) use types::{
     calculate_cost, AssistantTurn, ModelTurnResponse, TokenCostMicros, TokenUsage,
 };
 pub use types::{
-    managed_backend_base_url, resolve_model_base_url, validate_model_base_url,
-    EffectiveModelSettings, ARCEE_AUTH_CANONICAL_BASE_URL, CHATGPT_CODEX_CANONICAL_BASE_URL,
+    managed_backend_base_url, resolve_model_base_url, resolve_model_base_url_with_policy,
+    validate_model_base_url, validate_model_base_url_with_policy, EffectiveModelSettings,
+    ARCEE_AUTH_CANONICAL_BASE_URL, CHATGPT_CODEX_CANONICAL_BASE_URL,
 };
 pub use types::{BackendKind, DispatchWeight, ReasoningEffort};
 

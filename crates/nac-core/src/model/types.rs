@@ -150,6 +150,7 @@ pub struct EffectiveModelSettings {
     pub(crate) backend: BackendKind,
     pub(crate) model: String,
     pub(crate) base_url: String,
+    pub(crate) allow_insecure_http: bool,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) api_key_env: Option<String>,
     /// Trusted operator-mounted credential source. Only its path is
@@ -207,11 +208,19 @@ pub(super) fn allows_plaintext_transport(host: &url::Host<&str>) -> bool {
 /// missing-setting error is unreachable in practice (kept for future
 /// providers).
 pub fn resolve_model_base_url(backend: BackendKind, base_url: Option<String>) -> Result<String> {
+    resolve_model_base_url_with_policy(backend, base_url, false)
+}
+
+pub fn resolve_model_base_url_with_policy(
+    backend: BackendKind,
+    base_url: Option<String>,
+    allow_insecure_http: bool,
+) -> Result<String> {
     let base_url = base_url
         .or_else(|| catalog::default_base_url(backend))
         .or_else(|| managed_backend_base_url(backend).map(str::to_string));
     let base_url = required_nonblank_setting(base_url, "base_url")?;
-    validate_model_base_url(&base_url)?;
+    validate_model_base_url_with_policy(&base_url, allow_insecure_http)?;
     Ok(base_url)
 }
 
@@ -219,6 +228,17 @@ pub fn resolve_model_base_url(backend: BackendKind, base_url: Option<String>) ->
 /// endpoint. This does not resolve defaults, credentials, or provider-specific
 /// origin binding.
 pub fn validate_model_base_url(base_url: &str) -> Result<()> {
+    validate_model_base_url_with_policy(base_url, false)
+}
+
+/// Validate shared endpoint hygiene with an explicit public-HTTP policy.
+///
+/// The opt-in bypasses only the public plaintext transport rejection. URL
+/// shape, host, and embedded-userinfo checks remain unconditional.
+pub fn validate_model_base_url_with_policy(
+    base_url: &str,
+    allow_insecure_http: bool,
+) -> Result<()> {
     let parsed = Url::parse(base_url).map_err(|error| {
         model_configuration_error(format!(
             "invalid model configuration: base_url '{base_url}' is not a valid absolute URL: {error}"
@@ -239,7 +259,7 @@ pub fn validate_model_base_url(base_url: &str) -> Result<()> {
             "invalid model configuration: base_url '{base_url}' must include a host"
         ))
     })?;
-    if parsed.scheme() == "http" && !allows_plaintext_transport(&host) {
+    if parsed.scheme() == "http" && !allow_insecure_http && !allows_plaintext_transport(&host) {
         return Err(model_configuration_error(format!(
             "invalid model configuration: base_url '{base_url}' requires HTTPS; plaintext HTTP is accepted only for loopback and private-network hosts"
         )));
@@ -248,6 +268,12 @@ pub fn validate_model_base_url(base_url: &str) -> Result<()> {
 }
 
 impl EffectiveModelSettings {
+    // This is the single validation gate for the complete model tuple; keeping
+    // its inputs explicit makes accidental defaulting at callers visible.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the complete immutable model tuple is validated at one boundary"
+    )]
     fn from_optional_with_resolved(
         backend: Option<BackendKind>,
         model: Option<String>,
@@ -256,6 +282,7 @@ impl EffectiveModelSettings {
         api_key_env: Option<String>,
         extra_headers: std::collections::BTreeMap<String, String>,
         resolved: Option<catalog::ModelMetadata>,
+        allow_insecure_http: bool,
     ) -> Result<Self> {
         let backend = backend.ok_or_else(|| {
             model_configuration_error(
@@ -263,7 +290,7 @@ impl EffectiveModelSettings {
             )
         })?;
         let model = required_nonblank_setting(model, "model")?;
-        let base_url = resolve_model_base_url(backend, base_url)?;
+        let base_url = resolve_model_base_url_with_policy(backend, base_url, allow_insecure_http)?;
         // Conventional-var auto-selection: an API-key backend with no
         // explicit selector adopts the provider's conventional credential
         // variable when it exists in the environment (the value is read at
@@ -282,6 +309,7 @@ impl EffectiveModelSettings {
             backend,
             model,
             base_url,
+            allow_insecure_http,
             reasoning_effort,
             api_key_env,
             trusted_api_key_file: None,
@@ -327,9 +355,37 @@ impl EffectiveModelSettings {
             api_key_env,
             extra_headers,
             None,
+            false,
         )
     }
 
+    pub fn from_optional_with_http_policy(
+        backend: Option<BackendKind>,
+        model: Option<String>,
+        base_url: Option<String>,
+        reasoning_effort: Option<ReasoningEffort>,
+        api_key_env: Option<String>,
+        extra_headers: std::collections::BTreeMap<String, String>,
+        allow_insecure_http: bool,
+    ) -> Result<Self> {
+        Self::from_optional_with_resolved(
+            backend,
+            model,
+            base_url,
+            reasoning_effort,
+            api_key_env,
+            extra_headers,
+            None,
+            allow_insecure_http,
+        )
+    }
+
+    // Resume supplies the durable metadata and transport policy together with
+    // the rest of the immutable model tuple.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "resume must validate the complete stored tuple and durable metadata together"
+    )]
     pub(crate) fn new_with_resolved(
         backend: BackendKind,
         model: String,
@@ -338,6 +394,7 @@ impl EffectiveModelSettings {
         api_key_env: Option<String>,
         extra_headers: std::collections::BTreeMap<String, String>,
         resolved: catalog::ModelMetadata,
+        allow_insecure_http: bool,
     ) -> Result<Self> {
         Self::from_optional_with_resolved(
             Some(backend),
@@ -347,6 +404,7 @@ impl EffectiveModelSettings {
             api_key_env,
             extra_headers,
             Some(resolved),
+            allow_insecure_http,
         )
     }
 
@@ -365,6 +423,26 @@ impl EffectiveModelSettings {
             reasoning_effort,
             api_key_env,
             extra_headers,
+        )
+    }
+
+    pub fn new_with_http_policy(
+        backend: BackendKind,
+        model: String,
+        base_url: String,
+        reasoning_effort: Option<ReasoningEffort>,
+        api_key_env: Option<String>,
+        extra_headers: std::collections::BTreeMap<String, String>,
+        allow_insecure_http: bool,
+    ) -> Result<Self> {
+        Self::from_optional_with_http_policy(
+            Some(backend),
+            Some(model),
+            Some(base_url),
+            reasoning_effort,
+            api_key_env,
+            extra_headers,
+            allow_insecure_http,
         )
     }
 }

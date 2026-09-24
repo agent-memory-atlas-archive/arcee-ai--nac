@@ -1192,14 +1192,20 @@ async fn provider_models_handler(
             status: StatusCode::BAD_REQUEST,
             message: format!("backend '{backend}' has no default base URL; supply one"),
         })?;
-    validate_model_base_url(&base_url).map_err(ApiError::from)?;
-    let models = list_provider_models(backend, &base_url, &api_key)
-        .await
-        .map_err(|error| ApiError {
-            // A rejected key is the caller's problem, not a server fault.
-            status: StatusCode::BAD_GATEWAY,
-            message: error.to_string(),
-        })?;
+    validate_model_base_url_with_policy(&base_url, request.allow_insecure_http)
+        .map_err(ApiError::from)?;
+    let models = list_provider_models_with_http_policy(
+        backend,
+        &base_url,
+        &api_key,
+        request.allow_insecure_http,
+    )
+    .await
+    .map_err(|error| ApiError {
+        // A rejected key is the caller's problem, not a server fault.
+        status: StatusCode::BAD_GATEWAY,
+        message: error.to_string(),
+    })?;
     Ok(Json(ProviderModelList { base_url, models }))
 }
 

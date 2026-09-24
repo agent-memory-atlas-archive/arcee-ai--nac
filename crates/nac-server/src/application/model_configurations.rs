@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use nac_core::{
     light_model::LightModelSettings,
     model::{
-        list_managed_provider_models, list_provider_models, provider_default_base_url,
-        provider_for_model, provider_uses_api_key, remove_api_key, resolve_backend_api_key,
-        resolve_model_base_url, store_api_key, BackendKind, ManagedAuthProvider, ProviderModel,
-        ReasoningEffort,
+        list_managed_provider_models, list_provider_models_with_http_policy,
+        provider_default_base_url, provider_for_model, provider_uses_api_key, remove_api_key,
+        resolve_backend_api_key, resolve_model_base_url_with_policy, store_api_key, BackendKind,
+        ManagedAuthProvider, ProviderModel, ReasoningEffort,
     },
     model_configurations::{
         self, ModelConfigurationRecord, ModelConfigurationStoreError, NewModelConfiguration,
@@ -23,6 +23,7 @@ pub(crate) struct CreateModelConfiguration {
     pub(crate) backend: BackendKind,
     pub(crate) model: String,
     pub(crate) base_url: Option<String>,
+    pub(crate) allow_insecure_http: bool,
     pub(crate) api_key: Option<String>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) extra_headers: Option<BTreeMap<String, String>>,
@@ -36,6 +37,7 @@ pub(crate) struct UpdateModelConfiguration {
     pub(crate) backend: Field<BackendKind>,
     pub(crate) model: Field<String>,
     pub(crate) base_url: Field<String>,
+    pub(crate) allow_insecure_http: Field<bool>,
     pub(crate) api_key: Field<String>,
     pub(crate) reasoning_effort: Field<ReasoningEffort>,
     pub(crate) extra_headers: Field<BTreeMap<String, String>>,
@@ -48,6 +50,7 @@ pub(crate) struct ResolvedModelConfiguration {
     pub(crate) backend: BackendKind,
     pub(crate) model: Option<String>,
     pub(crate) base_url: String,
+    pub(crate) allow_insecure_http: bool,
     pub(crate) api_key_env: Option<String>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) models: Vec<ProviderModel>,
@@ -114,7 +117,9 @@ impl<'a> ModelConfigurationApplication<'a> {
         command: CreateModelConfiguration,
     ) -> Result<ModelConfigurationRecord, ModelConfigurationApplicationError> {
         let backend = command.backend;
-        let base_url = self.settle_base_url(backend, command.base_url.as_deref())?;
+        let allow_insecure_http = command.allow_insecure_http;
+        let base_url =
+            self.settle_base_url(backend, command.base_url.as_deref(), allow_insecure_http)?;
         let api_key = command
             .api_key
             .as_deref()
@@ -136,7 +141,7 @@ impl<'a> ModelConfigurationApplication<'a> {
         let light_model = command
             .light_model
             .map(|light| {
-                light_model::normalize(
+                light_model::normalize_with_http_policy(
                     light,
                     credential_name
                         .as_deref()
@@ -145,6 +150,7 @@ impl<'a> ModelConfigurationApplication<'a> {
                             name: Some(name),
                             previous: None,
                         }),
+                    allow_insecure_http,
                 )
             })
             .transpose()
@@ -154,6 +160,7 @@ impl<'a> ModelConfigurationApplication<'a> {
             backend: backend.to_string(),
             model: command.model,
             base_url,
+            allow_insecure_http,
             api_key_env: credential_name.clone(),
             reasoning_effort: command
                 .reasoning_effort
@@ -168,8 +175,11 @@ impl<'a> ModelConfigurationApplication<'a> {
             store_api_key(name, api_key).map_err(ModelConfigurationApplicationError::Internal)?;
         }
         if let Some(light) = configuration.light_model.as_ref() {
-            if let Err(error) = nac_core::light_model::validate(light, &configuration.extra_headers)
-            {
+            if let Err(error) = nac_core::light_model::validate_with_http_policy(
+                light,
+                &configuration.extra_headers,
+                configuration.allow_insecure_http,
+            ) {
                 if let Some(name) = credential_name.as_deref() {
                     let _ = remove_api_key(name);
                 }
@@ -211,7 +221,13 @@ impl<'a> ModelConfigurationApplication<'a> {
             Field::Clear => None,
             Field::Unchanged => (backend == stored_backend).then(|| existing.base_url.clone()),
         };
-        let base_url = self.settle_base_url(backend, requested_base_url.as_deref())?;
+        let allow_insecure_http = match command.allow_insecure_http {
+            Field::Set(value) => value,
+            Field::Clear => false,
+            Field::Unchanged => existing.allow_insecure_http,
+        };
+        let base_url =
+            self.settle_base_url(backend, requested_base_url.as_deref(), allow_insecure_http)?;
 
         let expects_key = provider_uses_api_key(backend);
         let supplied_key = match &command.api_key {
@@ -252,6 +268,7 @@ impl<'a> ModelConfigurationApplication<'a> {
             backend: backend.to_string(),
             model: required_text(command.model, &existing.model),
             base_url,
+            allow_insecure_http,
             api_key_env: api_key_env.clone(),
             reasoning_effort: match command.reasoning_effort {
                 Field::Set(effort) => Some(effort.as_str().to_string()),
@@ -271,8 +288,12 @@ impl<'a> ModelConfigurationApplication<'a> {
             initial_prompt: optional_value(command.initial_prompt, existing.initial_prompt.clone()),
             light_model: match command.light_model {
                 Field::Set(light) => Some(
-                    light_model::normalize(light, Some(inherited))
-                        .map_err(|error| invalid(error.to_string()))?,
+                    light_model::normalize_with_http_policy(
+                        light,
+                        Some(inherited),
+                        allow_insecure_http,
+                    )
+                    .map_err(|error| invalid(error.to_string()))?,
                 ),
                 Field::Clear => None,
                 Field::Unchanged => existing.light_model.clone().map(|mut light| {
@@ -286,8 +307,11 @@ impl<'a> ModelConfigurationApplication<'a> {
             store_api_key(name, key).map_err(ModelConfigurationApplicationError::Internal)?;
         }
         if let Some(light) = configuration.light_model.as_ref() {
-            if let Err(error) = nac_core::light_model::validate(light, &configuration.extra_headers)
-            {
+            if let Err(error) = nac_core::light_model::validate_with_http_policy(
+                light,
+                &configuration.extra_headers,
+                configuration.allow_insecure_http,
+            ) {
                 if let Some((name, _)) = replacement_credential.as_ref() {
                     let _ = remove_api_key(name);
                 }
@@ -359,6 +383,7 @@ impl<'a> ModelConfigurationApplication<'a> {
             identity.base_url,
             identity.api_key_env,
             config.model.reasoning_effort,
+            false,
         )
         .await
     }
@@ -383,6 +408,7 @@ impl<'a> ModelConfigurationApplication<'a> {
             Some(record.base_url),
             record.api_key_env,
             reasoning_effort,
+            record.allow_insecure_http,
         )
         .await
     }
@@ -394,8 +420,9 @@ impl<'a> ModelConfigurationApplication<'a> {
         base_url: Option<String>,
         api_key_env: Option<String>,
         reasoning_effort: Option<ReasoningEffort>,
+        allow_insecure_http: bool,
     ) -> Result<ResolvedModelConfiguration, ModelConfigurationApplicationError> {
-        let base_url = self.settle_base_url(backend, base_url.as_deref())?;
+        let base_url = self.settle_base_url(backend, base_url.as_deref(), allow_insecure_http)?;
         let mut models_error = None;
         let models = match ManagedAuthProvider::for_backend(backend) {
             Some(provider) => match list_managed_provider_models(provider).await {
@@ -408,7 +435,14 @@ impl<'a> ModelConfigurationApplication<'a> {
             None => {
                 let api_key = resolve_backend_api_key(backend, api_key_env.as_deref())
                     .map_err(|error| invalid(error.to_string()))?;
-                match list_provider_models(backend, &base_url, &api_key).await {
+                match list_provider_models_with_http_policy(
+                    backend,
+                    &base_url,
+                    &api_key,
+                    allow_insecure_http,
+                )
+                .await
+                {
                     Ok(models) => models,
                     Err(error) if backend == BackendKind::OpenAiChatCompletions => {
                         // Saved/manual model ids are authoritative. Discovery
@@ -430,6 +464,7 @@ impl<'a> ModelConfigurationApplication<'a> {
             backend,
             model,
             base_url,
+            allow_insecure_http,
             api_key_env,
             reasoning_effort,
             models,
@@ -466,6 +501,7 @@ impl<'a> ModelConfigurationApplication<'a> {
         &self,
         backend: BackendKind,
         requested: Option<&str>,
+        allow_insecure_http: bool,
     ) -> Result<String, ModelConfigurationApplicationError> {
         let base_url = requested
             .map(str::trim)
@@ -477,7 +513,8 @@ impl<'a> ModelConfigurationApplication<'a> {
                     "backend '{backend}' has no default base URL; supply one"
                 ))
             })?;
-        resolve_model_base_url(backend, Some(base_url)).map_err(|error| invalid(error.to_string()))
+        resolve_model_base_url_with_policy(backend, Some(base_url), allow_insecure_http)
+            .map_err(|error| invalid(error.to_string()))
     }
 }
 

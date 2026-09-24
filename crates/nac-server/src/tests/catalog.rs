@@ -122,6 +122,7 @@ async fn saved_chat_configuration_survives_unavailable_model_discovery() {
                 backend: BackendKind::OpenAiChatCompletions,
                 model: "vendor/uncatalogued-model".to_string(),
                 base_url: Some(base_url),
+                allow_insecure_http: false,
                 api_key: Some("saved-custom-key".to_string()),
                 reasoning_effort: None,
                 extra_headers: None,
@@ -184,6 +185,7 @@ async fn saved_chat_configuration_survives_discovery_that_omits_its_model() {
                 backend: BackendKind::OpenAiChatCompletions,
                 model: "vendor/manually-selected-model".to_string(),
                 base_url: Some(base_url),
+                allow_insecure_http: false,
                 api_key: Some("saved-custom-key".to_string()),
                 reasoning_effort: None,
                 extra_headers: None,
@@ -235,6 +237,7 @@ async fn saved_configurations_accept_public_https_across_create_update_and_resol
                 backend: BackendKind::OpenAiResponses,
                 model: "custom-primary-model".to_string(),
                 base_url: Some("https://gateway.noncanonical.example/v1".to_string()),
+                allow_insecure_http: false,
                 api_key: Some("saved-custom-key".to_string()),
                 reasoning_effort: None,
                 extra_headers: None,
@@ -270,6 +273,7 @@ async fn saved_configurations_accept_public_https_across_create_update_and_resol
                 base_url: application::Field::Set(
                     "https://updated.noncanonical.example/v2".to_string(),
                 ),
+                allow_insecure_http: application::Field::Unchanged,
                 api_key: application::Field::Unchanged,
                 reasoning_effort: application::Field::Unchanged,
                 extra_headers: application::Field::Unchanged,
@@ -299,6 +303,165 @@ async fn saved_configurations_accept_public_https_across_create_update_and_resol
     };
     assert!(error.to_string().contains(credential), "{error}");
     assert!(!error.to_string().contains("approved host"), "{error}");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn saved_public_http_configuration_requires_and_preserves_opt_in() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("saved_public_http_opt_in");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, None);
+    let manager = test_manager(&root);
+
+    let configuration = || application::model_configurations::CreateModelConfiguration {
+        name: "Plaintext gateway".to_string(),
+        backend: BackendKind::OpenAiChatCompletions,
+        model: "vendor/model".to_string(),
+        base_url: Some("http://gateway.example/v1".to_string()),
+        allow_insecure_http: false,
+        api_key: Some("plaintext-secret".to_string()),
+        reasoning_effort: None,
+        extra_headers: None,
+        orchestrator_compaction_threshold: None,
+        initial_prompt: None,
+        light_model: None,
+    };
+    let denied = manager
+        .model_configurations()
+        .create(configuration())
+        .unwrap_err();
+    assert!(denied.to_string().contains("requires HTTPS"), "{denied:#}");
+
+    let missing_key = manager
+        .model_configurations()
+        .create(
+            application::model_configurations::CreateModelConfiguration {
+                allow_insecure_http: true,
+                api_key: None,
+                ..configuration()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        missing_key.to_string().contains("requires an API key"),
+        "{missing_key:#}"
+    );
+
+    let created = manager
+        .model_configurations()
+        .create(
+            application::model_configurations::CreateModelConfiguration {
+                allow_insecure_http: true,
+                ..configuration()
+            },
+        )
+        .expect("saved configurations should accept explicit public HTTP opt-in");
+    assert!(created.allow_insecure_http);
+    let loaded =
+        model_configurations::load_model_configuration(&root.join("store.db"), &created.config_id)
+            .unwrap();
+    assert!(loaded.allow_insecure_http);
+
+    let credential = created.api_key_env.as_deref().unwrap();
+    nac_core::model::remove_api_key(credential).unwrap();
+    let resolve_error = match manager
+        .model_configurations()
+        .resolve_saved(&created.config_id)
+        .await
+    {
+        Ok(_) => panic!("the removed key should fail after HTTP policy validation"),
+        Err(error) => error,
+    };
+    assert!(
+        resolve_error.to_string().contains(credential),
+        "{resolve_error:#}"
+    );
+    assert!(
+        !resolve_error.to_string().contains("requires HTTPS"),
+        "{resolve_error:#}"
+    );
+
+    let update_error = manager
+        .model_configurations()
+        .update(
+            &created.config_id,
+            application::model_configurations::UpdateModelConfiguration {
+                name: application::Field::Unchanged,
+                backend: application::Field::Unchanged,
+                model: application::Field::Unchanged,
+                base_url: application::Field::Unchanged,
+                allow_insecure_http: application::Field::Set(false),
+                api_key: application::Field::Unchanged,
+                reasoning_effort: application::Field::Unchanged,
+                extra_headers: application::Field::Unchanged,
+                orchestrator_compaction_threshold: application::Field::Unchanged,
+                initial_prompt: application::Field::Unchanged,
+                light_model: application::Field::Unchanged,
+            },
+        )
+        .unwrap_err();
+    assert!(update_error.to_string().contains("requires HTTPS"));
+    assert!(
+        model_configurations::load_model_configuration(&root.join("store.db"), &created.config_id,)
+            .unwrap()
+            .allow_insecure_http
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn model_configuration_routes_round_trip_public_http_opt_in() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("saved_public_http_route");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, None);
+    let app = router(test_manager(&root));
+    let body = serde_json::json!({
+        "name": "HTTP route",
+        "backend": "openai-chat-completions",
+        "model": "vendor/model",
+        "base_url": "http://gateway.example/v1",
+        "api_key": "route-secret"
+    });
+
+    let denied = post_json(app.clone(), "/model-configs", body.clone()).await;
+    assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    assert!(response_json(denied).await["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("requires HTTPS")));
+
+    let mut opted_in = body;
+    opted_in["allow_insecure_http"] = serde_json::Value::Bool(true);
+    let created = post_json(app.clone(), "/model-configs", opted_in).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = response_json(created).await;
+    assert_eq!(created["allow_insecure_http"], true);
+    assert!(!created.to_string().contains("route-secret"));
+    let config_id = created["config_id"].as_str().unwrap();
+
+    let listed = response_json(get_response(app.clone(), "/model-configs", None).await).await;
+    assert_eq!(listed["configurations"][0]["allow_insecure_http"], true);
+
+    let disable = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/model-configs/{config_id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"allow_insecure_http":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disable.status(), StatusCode::BAD_REQUEST);
+    assert!(response_json(disable).await["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("requires HTTPS")));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -748,6 +911,7 @@ async fn models_endpoint_computes_auth_status_from_the_environment() {
                 backend: BackendKind::DeepSeekChat,
                 model: "deepseek-v4-flash".to_string(),
                 base_url: Some("https://api.deepseek.com".to_string()),
+                allow_insecure_http: false,
                 api_key: Some("saved-deepseek-key".to_string()),
                 reasoning_effort: None,
                 extra_headers: None,
@@ -893,6 +1057,7 @@ async fn create_session_rejects_ssh_host_combined_with_sandbox() {
         cwd: None,
         model: RequestField::Omitted,
         base_url: RequestField::Omitted,
+        allow_insecure_http: RequestField::Omitted,
         backend: RequestField::Omitted,
         reasoning_effort: RequestField::Omitted,
         api_key_env: RequestField::Omitted,
@@ -932,6 +1097,7 @@ async fn server_create_rejects_removed_backend_names_as_bad_requests() {
                 cwd: None,
                 model: RequestField::Omitted,
                 base_url: RequestField::Value("https://api.arcee.ai".to_string()),
+                allow_insecure_http: RequestField::Omitted,
                 backend: RequestField::Value(backend.to_string()),
                 reasoning_effort: RequestField::Omitted,
                 api_key_env: RequestField::Omitted,
@@ -978,6 +1144,7 @@ async fn stored_arcee_auth_config_errors_are_400_and_store_failures_are_500() {
                 UpdateConfigRequest {
                     model: RequestField::Value("trinity-large-thinking".to_string()),
                     base_url: RequestField::Value("https://api.arcee.ai".to_string()),
+                    allow_insecure_http: RequestField::Omitted,
                     backend: RequestField::Value("arcee-auth".to_string()),
                     reasoning_effort: RequestField::Omitted,
                     api_key_env: RequestField::Omitted,
@@ -1021,6 +1188,7 @@ async fn stored_arcee_auth_config_errors_are_400_and_store_failures_are_500() {
                 UpdateConfigRequest {
                     model: RequestField::Value("trinity-large-thinking".to_string()),
                     base_url: RequestField::Value("https://api.arcee.ai".to_string()),
+                    allow_insecure_http: RequestField::Omitted,
                     backend: RequestField::Value("arcee-auth".to_string()),
                     reasoning_effort: RequestField::Omitted,
                     api_key_env: RequestField::Omitted,
@@ -1057,6 +1225,7 @@ async fn stored_arcee_auth_config_errors_are_400_and_store_failures_are_500() {
                 UpdateConfigRequest {
                     model: RequestField::Value("trinity-large-thinking".to_string()),
                     base_url: RequestField::Value("https://api.arcee.ai".to_string()),
+                    allow_insecure_http: RequestField::Omitted,
                     backend: RequestField::Value("arcee-auth".to_string()),
                     reasoning_effort: RequestField::Omitted,
                     api_key_env: RequestField::Omitted,

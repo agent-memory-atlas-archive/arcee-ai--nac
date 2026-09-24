@@ -270,6 +270,7 @@ pub(super) async fn build_resume_config_from_snapshot(
         snapshot.api_key_env.clone(),
         snapshot.extra_headers.clone(),
         metadata,
+        snapshot.allow_insecure_http,
     )
     .and_then(|settings| settings.with_trusted_api_key_file(model.trusted_api_key_file.clone()))
     .map_err(|error| {
@@ -315,10 +316,11 @@ pub(super) async fn build_resume_config_from_snapshot(
             .light_model
             .as_ref()
             .map(|light| {
-                resolve_light_client(
+                resolve_light_client_with_http_policy(
                     light,
                     &snapshot.extra_headers,
                     model.trusted_light_credential.as_ref(),
+                    snapshot.allow_insecure_http,
                 )
             })
             .transpose()

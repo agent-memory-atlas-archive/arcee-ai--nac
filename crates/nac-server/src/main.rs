@@ -364,6 +364,10 @@ struct ModelArgs {
     #[arg(long, hide = true)]
     api_base_url: Option<String>,
 
+    /// Persisted public-HTTP opt-in transported to a managed worker.
+    #[arg(long, hide = true)]
+    allow_insecure_http: bool,
+
     /// Persisted model identifier snapshot transported to a managed worker.
     #[arg(long, hide = true)]
     api_model: Option<String>,
@@ -746,6 +750,7 @@ async fn run_managed_worker(cli: ManagedWorkerCli) -> Result<()> {
                 .map(OptionalModelOption::Value)
                 .unwrap_or_default(),
             api_base_url: cli.model.api_base_url,
+            allow_insecure_http: cli.model.allow_insecure_http,
             api_model: cli.model.api_model,
             api_key_env: cli
                 .model

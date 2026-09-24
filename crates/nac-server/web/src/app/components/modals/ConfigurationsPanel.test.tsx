@@ -215,6 +215,7 @@ it("waits for persisted configurations and managed status before emitting an imp
     backend: "openai-responses",
     model: "gpt-5.6-sol",
     base_url: "https://api.openai.com/v1",
+    allow_insecure_http: false,
     api_key_env: "SAVED_API_KEY",
     reasoning_effort: "high",
     models: [{ id: "gpt-5.6-sol", display_name: "GPT-5.6 Sol" }],
@@ -245,6 +246,7 @@ it("waits for persisted configurations and managed status before emitting an imp
           backend: "openai-responses",
           model: "gpt-5.6-sol",
           base_url: "https://api.openai.com/v1",
+          allow_insecure_http: false,
           api_key_env: "SAVED_API_KEY",
           reasoning_effort: "high",
           extra_headers: {},
@@ -285,6 +287,7 @@ it("preserves exact inherited advanced settings when duplicate presets share bas
       backend: "openai-responses" as const,
       model: "gpt-5.6-sol",
       base_url: "https://api.openai.com/v1",
+      allow_insecure_http: false,
       api_key_env: "SAVED_API_KEY",
       reasoning_effort: (index === 0 ? "low" : "medium") as "low" | "medium",
       extra_headers: { "X-Preset": suffix },
@@ -302,6 +305,7 @@ it("preserves exact inherited advanced settings when duplicate presets share bas
     backend: "openai-responses",
     model: "gpt-5.6-sol",
     base_url: "https://api.openai.com/v1",
+    allow_insecure_http: false,
     api_key_env: "SAVED_API_KEY",
     reasoning_effort: "high",
     models: [{ id: "gpt-5.6-sol", display_name: "GPT-5.6 Sol" }],
@@ -395,6 +399,7 @@ it("emits a custom public HTTPS endpoint without a separate trust repair", async
           backend: "openai-responses",
           model: "custom-model",
           base_url: "https://gateway.noncanonical.example/v1",
+          allow_insecure_http: false,
           api_key: "custom-secret",
         },
       }),
@@ -403,6 +408,65 @@ it("emits a custom public HTTPS endpoint without a separate trust repair", async
       expect.objectContaining({
         api_key: "custom-secret",
         base_url: "https://gateway.noncanonical.example/v1",
+      }),
+    );
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});
+
+it("requires an explicit warning-backed switch before emitting public HTTP opt-in", async () => {
+  vi.spyOn(api, "getManagedStatus").mockResolvedValue(hostStatus);
+  vi.spyOn(api, "listModelConfigs").mockResolvedValue({ configurations: [] });
+  vi.spyOn(api, "getModelCatalog").mockResolvedValue(catalog);
+  const onChange = vi.fn<(selection: LaunchModelSelection | null) => void>();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <ConfigurationsPanel invalid={false} onChange={onChange} />
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+  try {
+    fireEvent.click(await screen.findByRole("button", { name: "Browse Models" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create New" }));
+    fireEvent.click(screen.getByRole("button", { name: "Arcee API (Key)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Custom" }));
+    fireEvent.click(screen.getByRole("button", { name: "Arcee API (Key)" }));
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI Responses" }));
+
+    expect(
+      screen.getByText(
+        "Your API key, prompts, source code, tool output, and model responses may be read or modified in transit.",
+      ),
+    ).toBeTruthy();
+    const toggle = screen.getByRole("switch", { name: "Allow insecure HTTP" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.change(screen.getByPlaceholderText("Paste the provider key"), {
+      target: { value: "custom-secret" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("gpt-5.5"), {
+      target: { value: "custom-model" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("https://api.openai.com/v1"), {
+      target: { value: "http://gateway.example/v1" },
+    });
+
+    await waitFor(() =>
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: "save",
+        request: {
+          name: "custom-config-1",
+          backend: "openai-responses",
+          model: "custom-model",
+          base_url: "http://gateway.example/v1",
+          allow_insecure_http: true,
+          api_key: "custom-secret",
+        },
       }),
     );
   } finally {

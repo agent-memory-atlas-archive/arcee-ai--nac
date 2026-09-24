@@ -8551,6 +8551,11 @@
           "model"
         ],
         "properties": {
+          "allow_insecure_http": {
+            "type": "boolean",
+            "description": "Explicitly permit sending credentials and model traffic over public plaintext HTTP.",
+            "default": false
+          },
           "api_key": {
             "type": [
               "string",
@@ -8675,6 +8680,10 @@
       "CreateSessionRequest": {
         "type": "object",
         "properties": {
+          "allow_insecure_http": {
+            "$ref": "#/components/schemas/RequestField_bool_bool",
+            "description": "Explicitly permit public plaintext HTTP for this session's primary and light endpoints."
+          },
           "api_key_env": {
             "$ref": "#/components/schemas/RequestField_String_String"
           },
@@ -10552,11 +10561,15 @@
           "backend",
           "model",
           "base_url",
+          "allow_insecure_http",
           "extra_headers",
           "created_at",
           "updated_at"
         ],
         "properties": {
+          "allow_insecure_http": {
+            "type": "boolean"
+          },
           "api_key_env": {
             "type": [
               "string",
@@ -11204,6 +11217,11 @@
           "backend"
         ],
         "properties": {
+          "allow_insecure_http": {
+            "type": "boolean",
+            "description": "Explicitly permit public plaintext HTTP during provider discovery.",
+            "default": false
+          },
           "api_key": {
             "type": [
               "string",
@@ -11250,6 +11268,7 @@
           "session_id",
           "model",
           "base_url",
+          "allow_insecure_http",
           "backend",
           "reasoning_effort",
           "api_key_env",
@@ -11258,6 +11277,9 @@
           "config_version"
         ],
         "properties": {
+          "allow_insecure_http": {
+            "type": "boolean"
+          },
           "api_key_env": {
             "type": [
               "string",
@@ -11822,12 +11844,16 @@
           "backend",
           "model",
           "base_url",
+          "allow_insecure_http",
           "api_key_env",
           "reasoning_effort",
           "models",
           "models_error"
         ],
         "properties": {
+          "allow_insecure_http": {
+            "type": "boolean"
+          },
           "api_key_env": {
             "type": [
               "string",
@@ -14165,6 +14191,10 @@
       "UpdateConfigRequest": {
         "type": "object",
         "properties": {
+          "allow_insecure_http": {
+            "$ref": "#/components/schemas/RequestField_bool_bool",
+            "description": "Omitted preserves the session value; null disables the opt-in."
+          },
           "api_key_env": {
             "$ref": "#/components/schemas/RequestField_String_String"
           },
@@ -14292,6 +14322,9 @@
       "UpdateModelConfigurationRequest": {
         "type": "object",
         "properties": {
+          "allow_insecure_http": {
+            "$ref": "#/components/schemas/RequestField_bool_bool"
+          },
           "api_key": {
             "$ref": "#/components/schemas/RequestField_String_String"
           },

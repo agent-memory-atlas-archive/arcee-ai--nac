@@ -116,8 +116,9 @@ use nac_core::{
         SessionEventEnvelope, SessionReplayGap,
     },
     model::{
-        list_managed_provider_models, list_provider_models, provider_default_base_url,
-        resolve_backend_api_key, validate_model_base_url, ManagedAuthProvider, ModelListing,
+        list_managed_provider_models, list_provider_models_with_http_policy,
+        provider_default_base_url, resolve_backend_api_key, validate_model_base_url_with_policy,
+        ManagedAuthProvider, ModelListing,
     },
     permissions::PermissionReply,
     runtime::{self, NacConfig, StoreOptions},

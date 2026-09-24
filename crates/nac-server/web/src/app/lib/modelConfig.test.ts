@@ -20,6 +20,7 @@ it("accepts a credentialless API-key selection only with an explicit caller capa
     model: "trinity-large-thinking",
     backend: "arcee-api",
     base_url: "https://api.arcee.ai/api/v1",
+    allow_insecure_http: false,
     api_key_env: null,
     reasoning_effort: null,
     extra_headers: {},
@@ -36,4 +37,27 @@ it("accepts a credentialless API-key selection only with an explicit caller capa
   };
   expect(buildSettingsPatch(values, initial, true)).toEqual({ model: values.model });
   expect(() => buildSettingsPatch(values, initial)).toThrow("requires an API key");
+});
+
+it("emits the insecure HTTP acknowledgement only when it changes", () => {
+  const initial: SettingsInitialValues = {
+    model: "custom-model",
+    backend: "openai-responses",
+    base_url: "http://gateway.example/v1",
+    allow_insecure_http: false,
+    api_key_env: "OPENAI_API_KEY",
+    reasoning_effort: null,
+    extra_headers: {},
+    orchestrator_compaction_threshold: null,
+  };
+  const values: ModelFormValues = {
+    ...initial,
+    allow_insecure_http: true,
+    api_key_env: "OPENAI_API_KEY",
+    credential_mode: "variable",
+    reasoning_effort: "",
+    extra_headers: "",
+    orchestrator_compaction_threshold: "",
+  };
+  expect(buildSettingsPatch(values, initial)).toEqual({ allow_insecure_http: true });
 });

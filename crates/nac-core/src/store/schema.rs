@@ -4,10 +4,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 mod managed_tables;
+mod model_configurations;
 mod wal_preflight;
 
 pub(super) use managed_tables::create_managed_maintenance_tables;
 use managed_tables::create_terminal_remote_cleanups_table;
+use model_configurations::create_model_configurations_table;
 
 #[cfg(test)]
 #[path = "schema/startup_tests.rs"]
@@ -23,7 +25,8 @@ mod future_schema_tests;
 
 use wal_preflight::read_schema_version_header;
 
-// 28 adds typed durable run-failure and bounded goal-retry metadata.
+// 29 adds the public-HTTP opt-in to reusable configurations and durable sessions.
+// 28 adds typed run-failure and bounded goal-retry metadata.
 // 27 composes the independently shipped v25 Managed NAC maintenance schema and
 // v25/v26 permission-mode schema so either predecessor shape is repaired.
 // 26 adds a durable revision for linearizable permission-mode transitions.
@@ -44,7 +47,8 @@ use wal_preflight::read_schema_version_header;
 // early whenever the stored version already equals this one. (12 carries the
 // same schema as 11, which added episodes.status; 10 added the
 // ssh_configurations table; 9 the per-session ssh port and key columns.)
-const STORE_SCHEMA_VERSION: i64 = 28;
+const STORE_SCHEMA_VERSION: i64 = 29;
+const HTTP_OPT_IN_COLUMN: &str = "INTEGER NOT NULL DEFAULT 0 CHECK (allow_insecure_http IN (0, 1))";
 pub const MINIMUM_MIGRATABLE_SCHEMA_VERSION: i64 = 0;
 
 /// Current durable-store schema version for credential-free readiness and
@@ -813,7 +817,7 @@ fn open_connection_with_hooks(
             transaction.execute_batch("DROP TABLE IF EXISTS session_overviews")?;
         }
         2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20
-        | 21 | 22 | 23 | 24 | 25 | 26 | 27 | STORE_SCHEMA_VERSION => {}
+        | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | STORE_SCHEMA_VERSION => {}
         unsupported => {
             return Err(anyhow!(
                 "unsupported store schema version {unsupported}; this build supports versions {MINIMUM_MIGRATABLE_SCHEMA_VERSION} through {STORE_SCHEMA_VERSION}"
@@ -821,6 +825,12 @@ fn open_connection_with_hooks(
         }
     }
 
+    ensure_column(
+        &transaction,
+        "sessions",
+        "allow_insecure_http",
+        HTTP_OPT_IN_COLUMN,
+    )?;
     ensure_column(
         &transaction,
         "sessions",
@@ -915,6 +925,12 @@ fn open_connection_with_hooks(
         "model_configurations",
         "light_model_json",
         "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "model_configurations",
+        "allow_insecure_http",
+        HTTP_OPT_IN_COLUMN,
     )?;
     create_projects_tables(&transaction)?;
     create_ssh_configurations_table(&transaction)?;
@@ -1038,6 +1054,7 @@ fn create_base_schema(conn: &Connection) -> Result<()> {
              store_path TEXT NOT NULL,
              model TEXT NOT NULL,
              base_url TEXT NOT NULL,
+             allow_insecure_http INTEGER NOT NULL DEFAULT 0 CHECK (allow_insecure_http IN (0, 1)),
              backend TEXT,
              reasoning_effort TEXT,
              sandbox_json TEXT,
@@ -1355,43 +1372,6 @@ fn create_workspace_revisions_table(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_workspace_revisions_session
              ON workspace_revisions(session_id, id DESC);",
     )?;
-    Ok(())
-}
-
-/// Reusable model settings the launch modal offers by name.
-///
-/// The secret never lands here: `api_key_env` holds the name the key is filed
-/// under in the credential store, which is the same indirection a hand-written
-/// `config.toml` uses, so resolving a key at run time needs no special case.
-/// The table is global rather than per-session, hence no foreign key.
-fn create_model_configurations_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS model_configurations (
-             config_id TEXT PRIMARY KEY,
-             name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
-             backend TEXT NOT NULL CHECK (length(trim(backend)) > 0),
-             model TEXT NOT NULL CHECK (length(trim(model)) > 0),
-             base_url TEXT NOT NULL CHECK (length(trim(base_url)) > 0),
-             api_key_env TEXT,
-             reasoning_effort TEXT,
-             extra_headers_json TEXT NOT NULL DEFAULT '{{}}',
-             orchestrator_compaction_threshold INTEGER
-                 CHECK ({THRESHOLD_CHECK}),
-             initial_prompt TEXT,
-             created_at TEXT NOT NULL,
-             updated_at TEXT NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_model_configurations_name
-             ON model_configurations(name);",
-        THRESHOLD_CHECK = model_configuration_threshold_check(),
-    ))?;
-    ensure_column(
-        conn,
-        "model_configurations",
-        "orchestrator_compaction_threshold",
-        &format!("INTEGER CHECK ({})", model_configuration_threshold_check()),
-    )?;
-    ensure_column(conn, "model_configurations", "initial_prompt", "TEXT")?;
     Ok(())
 }
 
@@ -1779,18 +1759,6 @@ fn create_managed_orchestrators_table(conn: &Connection) -> Result<()> {
              ON managed_orchestrators(root_session_id, status, updated_at, orchestrator_session_id);",
     )?;
     Ok(())
-}
-
-/// Same bound the per-session column enforces, so a saved default can never
-/// describe a session the sessions table would refuse.
-fn model_configuration_threshold_check() -> String {
-    format!(
-        "orchestrator_compaction_threshold IS NULL OR \
-         (typeof(orchestrator_compaction_threshold) = 'integer' \
-          AND orchestrator_compaction_threshold > 0 \
-          AND orchestrator_compaction_threshold <= {})",
-        crate::MAX_SUPPORTED_TOKEN_COUNT
-    )
 }
 
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {

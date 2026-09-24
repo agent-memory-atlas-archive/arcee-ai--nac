@@ -94,6 +94,7 @@ async fn arcee_sensitive_extra_header_still_fails_before_connection() {
             "hOsT".to_string(),
             address.to_string(),
         )]),
+        allow_insecure_http: false,
         arcee_credential_source: Some(ArceeCredentialSource::ApiKey),
         cache_ttl: None,
         prompt_cache_key: None,

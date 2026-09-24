@@ -278,6 +278,7 @@ pub fn update_session_config(
             session_id: snapshot.session_id.clone(),
             model: snapshot.model.clone(),
             base_url: snapshot.base_url.clone(),
+            allow_insecure_http: snapshot.allow_insecure_http,
             backend: Some(snapshot.backend.as_str().to_string()),
             reasoning_effort: snapshot
                 .reasoning_effort
@@ -312,17 +313,19 @@ pub fn update_raw_session_config(
         "UPDATE sessions
          SET model = ?1,
              base_url = ?2,
-             backend = ?3,
-             reasoning_effort = ?4,
-             api_key_env = ?5,
-             extra_headers_json = ?6,
-             light_model_json = ?7,
-             orchestrator_compaction_threshold = ?8,
-             config_version = ?9
-         WHERE session_id = ?10 AND config_version = ?11",
+             allow_insecure_http = ?3,
+             backend = ?4,
+             reasoning_effort = ?5,
+             api_key_env = ?6,
+             extra_headers_json = ?7,
+             light_model_json = ?8,
+             orchestrator_compaction_threshold = ?9,
+             config_version = ?10
+         WHERE session_id = ?11 AND config_version = ?12",
         params![
             config.model,
             config.base_url,
+            config.allow_insecure_http,
             config.backend,
             config.reasoning_effort,
             config.api_key_env,
@@ -374,7 +377,7 @@ pub fn load_session(path: &Path, session_id: &str) -> Result<SessionSnapshot> {
     let conn = crate::store::open_connection(path)?;
     let row = conn
         .query_row(
-            "SELECT s.session_id, s.cwd, s.model, s.base_url, s.backend, s.reasoning_effort,
+            "SELECT s.session_id, s.cwd, s.model, s.base_url, s.allow_insecure_http, s.backend, s.reasoning_effort,
                     s.sandbox_json, s.messages_json, s.last_response_duration_ms,
                     s.previous_response_duration_ms, s.response_durations_ms_json,
                     s.created_at, s.updated_at, s.host_id, s.api_key_env,
@@ -445,7 +448,7 @@ pub fn load_session_config(path: &Path, session_id: &str) -> Result<RawSessionCo
     let conn = crate::store::open_connection(path)?;
     let row = conn
         .query_row(
-            "SELECT session_id, model, base_url, backend, reasoning_effort, api_key_env, extra_headers_json, config_version, orchestrator_compaction_threshold, light_model_json
+            "SELECT session_id, model, base_url, allow_insecure_http, backend, reasoning_effort, api_key_env, extra_headers_json, config_version, orchestrator_compaction_threshold, light_model_json
              FROM sessions
              WHERE session_id = ?1",
             params![session_id],
@@ -455,16 +458,17 @@ pub fn load_session_config(path: &Path, session_id: &str) -> Result<RawSessionCo
                         session_id: row.get(0)?,
                         model: row.get(1)?,
                         base_url: row.get(2)?,
-                        backend: row.get(3)?,
-                        reasoning_effort: row.get(4)?,
-                        api_key_env: row.get(5)?,
-                        extra_headers_json: row.get(6)?,
+                        allow_insecure_http: row.get(3)?,
+                        backend: row.get(4)?,
+                        reasoning_effort: row.get(5)?,
+                        api_key_env: row.get(6)?,
+                        extra_headers_json: row.get(7)?,
                         light_model: None,
-                        config_version: row.get(7)?,
-                        orchestrator_compaction_threshold: row.get(8)?,
+                        config_version: row.get(8)?,
+                        orchestrator_compaction_threshold: row.get(9)?,
                         diagnostics: Vec::new(),
                     },
-                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             },
         )
@@ -687,7 +691,7 @@ pub fn load_last_session(path: &Path) -> Result<SessionSnapshot> {
     let conn = crate::store::open_connection(path)?;
     let row = conn
         .query_row(
-            "SELECT s.session_id, s.cwd, s.model, s.base_url, s.backend, s.reasoning_effort,
+            "SELECT s.session_id, s.cwd, s.model, s.base_url, s.allow_insecure_http, s.backend, s.reasoning_effort,
                     s.sandbox_json, s.messages_json, s.last_response_duration_ms,
                     s.previous_response_duration_ms, s.response_durations_ms_json,
                     s.created_at, s.updated_at, s.host_id, s.api_key_env,
@@ -745,26 +749,27 @@ fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         cwd: row.get(1)?,
         model: row.get(2)?,
         base_url: row.get(3)?,
-        backend: row.get(4)?,
-        reasoning_effort: row.get(5)?,
-        sandbox_json: row.get(6)?,
-        messages_json: row.get(7)?,
-        last_response_duration_ms: row.get(8)?,
-        previous_response_duration_ms: row.get(9)?,
-        response_durations_ms_json: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        ssh_host: row.get(13)?,
-        api_key_env: row.get(14)?,
-        extra_headers_json: row.get(15)?,
-        token_usages_json: row.get(16)?,
-        config_version: row.get(17)?,
-        orchestrator_compaction_threshold: row.get(18)?,
-        ssh_port: row.get(19)?,
-        ssh_identity_file: row.get(20)?,
-        light_model_json: row.get(21)?,
-        project_id: row.get(22)?,
-        behavior: row.get(23)?,
+        allow_insecure_http: row.get(4)?,
+        backend: row.get(5)?,
+        reasoning_effort: row.get(6)?,
+        sandbox_json: row.get(7)?,
+        messages_json: row.get(8)?,
+        last_response_duration_ms: row.get(9)?,
+        previous_response_duration_ms: row.get(10)?,
+        response_durations_ms_json: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        ssh_host: row.get(14)?,
+        api_key_env: row.get(15)?,
+        extra_headers_json: row.get(16)?,
+        token_usages_json: row.get(17)?,
+        config_version: row.get(18)?,
+        orchestrator_compaction_threshold: row.get(19)?,
+        ssh_port: row.get(20)?,
+        ssh_identity_file: row.get(21)?,
+        light_model_json: row.get(22)?,
+        project_id: row.get(23)?,
+        behavior: row.get(24)?,
     })
 }
 
@@ -1240,7 +1245,7 @@ pub(crate) fn insert_or_replace_session(
     // actually opened for this write and is never read back.
     tx.execute(
         "INSERT INTO sessions (
-             session_id, cwd, store_path, model, base_url, backend, reasoning_effort,
+             session_id, cwd, store_path, model, base_url, allow_insecure_http, backend, reasoning_effort,
              sandbox_json, messages_json, visible_message_count, last_user_prompt,
              last_response_duration_ms, previous_response_duration_ms,
              response_durations_ms_json, created_at, updated_at, host_id, api_key_env,
@@ -1249,7 +1254,7 @@ pub(crate) fn insert_or_replace_session(
              light_model_json, behavior
          ) VALUES (
              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
          )
          ON CONFLICT(session_id) DO UPDATE SET
              cwd = excluded.cwd,
@@ -1272,6 +1277,7 @@ pub(crate) fn insert_or_replace_session(
             path.display().to_string(),
             snapshot.model,
             snapshot.base_url,
+            snapshot.allow_insecure_http,
             snapshot.backend.as_str(),
             snapshot
                 .reasoning_effort
@@ -1306,6 +1312,7 @@ struct SessionRow {
     cwd: String,
     model: String,
     base_url: String,
+    allow_insecure_http: bool,
     backend: Option<String>,
     reasoning_effort: Option<String>,
     sandbox_json: Option<String>,
@@ -1350,6 +1357,7 @@ impl SessionRow {
             cwd: PathBuf::from(self.cwd),
             model: self.model,
             base_url,
+            allow_insecure_http: self.allow_insecure_http,
             backend,
             reasoning_effort: parse_reasoning_effort(self.reasoning_effort)?,
             sandbox_spec: deserialize_sandbox(self.sandbox_json)?,

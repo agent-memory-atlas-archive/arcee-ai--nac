@@ -201,6 +201,7 @@ export interface components {
       url?: string | null;
     };
     CreateModelConfigurationRequest: {
+      allow_insecure_http?: boolean;
       api_key?: string | null;
       backend: components["schemas"]["BackendKind"];
       base_url?: string | null;
@@ -222,6 +223,7 @@ export interface components {
       ssh_port?: number | null;
     };
     CreateSessionRequest: {
+      allow_insecure_http?: components["schemas"]["RequestField_bool_bool"];
       api_key_env?: components["schemas"]["RequestField_String_String"];
       backend?: components["schemas"]["RequestField_String_String"];
       base_url?: components["schemas"]["RequestField_String_String"];
@@ -539,6 +541,7 @@ export interface components {
     ModelConfigFromFileRequest: { path: string };
     ModelConfigurationList: { configurations: components["schemas"]["ModelConfigurationRecord"][] };
     ModelConfigurationRecord: {
+      allow_insecure_http: boolean;
       api_key_env?: string | null;
       backend: string;
       base_url: string;
@@ -647,6 +650,7 @@ export interface components {
     ProviderModel: { display_name: string | null; id: string };
     ProviderModelList: { base_url: string; models: components["schemas"]["ProviderModel"][] };
     ProviderModelsRequest: {
+      allow_insecure_http?: boolean;
       api_key?: string | null;
       api_key_env?: string | null;
       backend: components["schemas"]["BackendKind"];
@@ -654,6 +658,7 @@ export interface components {
     };
     PutManagedSecretRequest: { value: string };
     RawSessionConfig: {
+      allow_insecure_http: boolean;
       api_key_env: string | null;
       backend: string | null;
       base_url: string;
@@ -749,6 +754,7 @@ export interface components {
     RequestField_u64_u64: null | number;
     RequestField_Vec_Vec_String: null | string[];
     ResolvedModelConfiguration: {
+      allow_insecure_http: boolean;
       api_key_env: string | null;
       backend: components["schemas"]["BackendKind"];
       base_url: string;
@@ -1128,6 +1134,7 @@ export interface components {
       | "cancelled"
       | "interrupted";
     UpdateConfigRequest: {
+      allow_insecure_http?: components["schemas"]["RequestField_bool_bool"];
       api_key_env?: components["schemas"]["RequestField_String_String"];
       backend?: components["schemas"]["RequestField_String_String"];
       base_url?: components["schemas"]["RequestField_String_String"];
@@ -1160,6 +1167,7 @@ export interface components {
       url?: components["schemas"]["RequestField_String_String"];
     };
     UpdateModelConfigurationRequest: {
+      allow_insecure_http?: components["schemas"]["RequestField_bool_bool"];
       api_key?: components["schemas"]["RequestField_String_String"];
       backend?: components["schemas"]["RequestField_BackendKind_BackendKind"];
       base_url?: components["schemas"]["RequestField_String_String"];

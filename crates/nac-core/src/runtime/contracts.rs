@@ -38,6 +38,8 @@ pub struct ModelOptions {
     pub backend: Option<BackendKind>,
     pub reasoning_effort: OptionalModelOption<ReasoningEffort>,
     pub api_base_url: Option<String>,
+    /// Explicitly permit public plaintext HTTP for both primary and light model endpoints.
+    pub allow_insecure_http: bool,
     pub api_model: Option<String>,
     pub api_key_env: OptionalModelOption<String>,
     /// Trusted operator-mounted credential path. This is internal runtime

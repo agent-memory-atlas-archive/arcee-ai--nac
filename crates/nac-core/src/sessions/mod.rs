@@ -106,6 +106,9 @@ pub struct RawSessionConfig {
     pub session_id: String,
     pub model: String,
     pub base_url: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(required))]
+    pub allow_insecure_http: bool,
     #[cfg_attr(feature = "openapi", schema(required))]
     pub backend: Option<String>,
     #[cfg_attr(feature = "openapi", schema(required))]
@@ -175,6 +178,8 @@ pub struct SessionSnapshot {
     pub cwd: PathBuf,
     pub model: String,
     pub base_url: String,
+    /// Explicit opt-in allowing public plaintext HTTP for primary and light endpoints.
+    pub allow_insecure_http: bool,
     pub backend: BackendKind,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub sandbox_spec: Option<SandboxSpec>,

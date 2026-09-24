@@ -15,6 +15,9 @@ pub struct ModelConfigurationRecord {
     pub backend: String,
     pub model: String,
     pub base_url: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(required))]
+    pub allow_insecure_http: bool,
     pub api_key_env: Option<String>,
     pub reasoning_effort: Option<String>,
     pub extra_headers: BTreeMap<String, String>,
@@ -36,6 +39,7 @@ pub struct NewModelConfiguration {
     pub backend: String,
     pub model: String,
     pub base_url: String,
+    pub allow_insecure_http: bool,
     pub api_key_env: Option<String>,
     pub reasoning_effort: Option<String>,
     pub extra_headers: BTreeMap<String, String>,
@@ -159,24 +163,25 @@ pub(crate) fn row_to_record_at(
     row: &rusqlite::Row<'_>,
     offset: usize,
 ) -> rusqlite::Result<ModelConfigurationRecord> {
-    let extra_headers: String = row.get(offset + 7)?;
+    let extra_headers: String = row.get(offset + 8)?;
     Ok(ModelConfigurationRecord {
         config_id: row.get(offset)?,
         name: row.get(offset + 1)?,
         backend: row.get(offset + 2)?,
         model: row.get(offset + 3)?,
         base_url: row.get(offset + 4)?,
-        api_key_env: row.get(offset + 5)?,
-        reasoning_effort: row.get(offset + 6)?,
+        allow_insecure_http: row.get(offset + 5)?,
+        api_key_env: row.get(offset + 6)?,
+        reasoning_effort: row.get(offset + 7)?,
         extra_headers: decode_headers(&extra_headers),
-        orchestrator_compaction_threshold: row.get(offset + 8)?,
-        initial_prompt: row.get(offset + 9)?,
+        orchestrator_compaction_threshold: row.get(offset + 9)?,
+        initial_prompt: row.get(offset + 10)?,
         light_model: decode_light_model(
-            row.get::<_, Option<String>>(offset + 12)?.as_deref(),
-            offset + 12,
+            row.get::<_, Option<String>>(offset + 13)?.as_deref(),
+            offset + 13,
         )?,
-        created_at: row.get(offset + 10)?,
-        updated_at: row.get(offset + 11)?,
+        created_at: row.get(offset + 11)?,
+        updated_at: row.get(offset + 12)?,
     })
 }
 
@@ -184,7 +189,8 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelConfiguration
     row_to_record_at(row, 0)
 }
 
-const SELECT_COLUMNS: &str = "config_id, name, backend, model, base_url, api_key_env,
+const SELECT_COLUMNS: &str =
+    "config_id, name, backend, model, base_url, allow_insecure_http, api_key_env,
      reasoning_effort, extra_headers_json, orchestrator_compaction_threshold,
      initial_prompt, created_at, updated_at, light_model_json";
 
@@ -240,6 +246,7 @@ fn validated_record(
         backend: nonblank(&configuration.backend, "backend")?,
         model: nonblank(&configuration.model, "model")?,
         base_url: nonblank(&configuration.base_url, "base_url")?,
+        allow_insecure_http: configuration.allow_insecure_http,
         api_key_env: configuration.api_key_env,
         reasoning_effort: configuration.reasoning_effort,
         extra_headers: configuration.extra_headers,
@@ -279,16 +286,17 @@ pub fn insert_model_configuration(
     let conn = open_runtime_connection(path)?;
     conn.execute(
         "INSERT INTO model_configurations
-         (config_id, name, backend, model, base_url, api_key_env,
+         (config_id, name, backend, model, base_url, allow_insecure_http, api_key_env,
           reasoning_effort, extra_headers_json, orchestrator_compaction_threshold,
           initial_prompt, created_at, updated_at, light_model_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             record.config_id,
             record.name,
             record.backend,
             record.model,
             record.base_url,
+            record.allow_insecure_http,
             record.api_key_env,
             record.reasoning_effort,
             encode_headers(&record.extra_headers)?,
@@ -328,10 +336,11 @@ pub fn update_model_configuration(
     let updated = conn
         .execute(
             "UPDATE model_configurations
-             SET name = ?2, backend = ?3, model = ?4, base_url = ?5, api_key_env = ?6,
-                 reasoning_effort = ?7, extra_headers_json = ?8,
-                 orchestrator_compaction_threshold = ?9, initial_prompt = ?10,
-                 updated_at = ?11, light_model_json = ?12
+             SET name = ?2, backend = ?3, model = ?4, base_url = ?5,
+                 allow_insecure_http = ?6, api_key_env = ?7,
+                 reasoning_effort = ?8, extra_headers_json = ?9,
+                 orchestrator_compaction_threshold = ?10, initial_prompt = ?11,
+                 updated_at = ?12, light_model_json = ?13
              WHERE config_id = ?1",
             params![
                 record.config_id,
@@ -339,6 +348,7 @@ pub fn update_model_configuration(
                 record.backend,
                 record.model,
                 record.base_url,
+                record.allow_insecure_http,
                 record.api_key_env,
                 record.reasoning_effort,
                 encode_headers(&record.extra_headers)?,
@@ -419,6 +429,7 @@ mod tests {
             backend: "openai-responses".to_string(),
             model: "gpt-5.5".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
+            allow_insecure_http: false,
             api_key_env: Some("NAC_GENERATED_KEY".to_string()),
             reasoning_effort: Some("high".to_string()),
             extra_headers: BTreeMap::from([("X-Trace".to_string(), "on".to_string())]),
@@ -441,6 +452,26 @@ mod tests {
         assert_eq!(loaded.api_key_env.as_deref(), Some("NAC_GENERATED_KEY"));
         assert_eq!(loaded.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(loaded.extra_headers["X-Trace"], "on");
+
+        let _ = std::fs::remove_dir_all(store_path.parent().unwrap());
+    }
+
+    #[test]
+    fn insecure_http_opt_in_round_trips_and_updates() {
+        let store_path = initialized_store("insecure_http");
+        let mut config = configuration("HTTP gateway");
+        config.base_url = "http://gateway.example/v1".to_string();
+        config.allow_insecure_http = true;
+
+        let inserted = insert_model_configuration(&store_path, "config-http", config).unwrap();
+        assert!(inserted.allow_insecure_http);
+        let loaded = load_model_configuration(&store_path, "config-http").unwrap();
+        assert!(loaded.allow_insecure_http);
+
+        let mut replacement = configuration("HTTP gateway");
+        replacement.allow_insecure_http = false;
+        let updated = update_model_configuration(&store_path, "config-http", replacement).unwrap();
+        assert!(!updated.allow_insecure_http);
 
         let _ = std::fs::remove_dir_all(store_path.parent().unwrap());
     }

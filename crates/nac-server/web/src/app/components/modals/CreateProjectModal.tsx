@@ -359,6 +359,7 @@ function CreateProjectForm({
     let backend: BackendKind;
     let model: string;
     let baseUrl: string;
+    let allowInsecureHttp: boolean;
     let apiKeyEnv: string | null;
     let configuredEffort: string | null;
     // Only a saved setup can become the project's default; a one-off catalog
@@ -375,6 +376,7 @@ function CreateProjectForm({
         backend = record.backend as BackendKind;
         model = record.model;
         baseUrl = record.base_url;
+        allowInsecureHttp = record.allow_insecure_http ?? false;
         apiKeyEnv = record.api_key_env ?? null;
         configuredEffort = record.reasoning_effort ?? null;
         defaultModelConfigId = record.config_id;
@@ -382,6 +384,7 @@ function CreateProjectForm({
         backend = selection.backend;
         model = selection.model;
         baseUrl = selection.base_url;
+        allowInsecureHttp = selection.allow_insecure_http;
         apiKeyEnv = selection.api_key_env;
         configuredEffort = selection.reasoning_effort;
         headers = headers ?? selection.extra_headers ?? undefined;
@@ -430,6 +433,7 @@ function CreateProjectForm({
       project_id: projectId,
       model,
       base_url: baseUrl,
+      allow_insecure_http: allowInsecureHttp,
       backend,
       api_key_env: apiKeyEnv,
       reasoning_effort: reasoning === CLEAR_EFFORT ? null : reasoning || configuredEffort || null,

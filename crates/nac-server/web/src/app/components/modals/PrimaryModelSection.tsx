@@ -78,6 +78,7 @@ export function PrimaryModelSection({
         backend: effective.pick.backend,
         model: effective.pick.model,
         base_url: initial.base_url,
+        allow_insecure_http: initial.allow_insecure_http ?? false,
         api_key_env: initial.api_key_env,
         reasoning_effort: effective.effort || null,
         extra_headers: initial.extra_headers,
@@ -90,6 +91,7 @@ export function PrimaryModelSection({
       backend: effective.pick.backend,
       model: effective.pick.model,
       base_url: effective.pick.baseUrl,
+      allow_insecure_http: false,
       // Provider accounts and conventional environment credentials are
       // resolved server-side; the browser never receives credential values.
       api_key_env: provider?.connection?.api_key_env ?? null,
