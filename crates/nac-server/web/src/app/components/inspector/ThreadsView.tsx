@@ -899,7 +899,12 @@ export function ThreadsView({
   // phone dialog header names that thread instead of the panel label.
   const currentName = current?.name ?? null;
   const currentRunning = Boolean(currentName && runningNames.has(currentName));
-  const canSteerCurrent = canSteerWorkers && currentRunning;
+  // `runningNames` deliberately treats active snapshot entries as running
+  // while SSE reconnects so the list and detail pane do not flash pending.
+  // Steering is a capability boundary, however, and must wait for the live
+  // `thread_started` state so a pending or just-finished worker never gains an
+  // actionable control during that approximation window.
+  const canSteerCurrent = canSteerWorkers && live?.status === "running";
   const eventPages = useThreadEventPages(snapshot ? sessionId : null, currentName);
   const pagedEvents = useMemo(
     () => (eventPages.data ? mergeThreadEventPages(eventPages.data.pages) : undefined),

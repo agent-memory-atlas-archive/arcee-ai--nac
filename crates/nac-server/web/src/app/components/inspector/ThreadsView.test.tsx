@@ -45,13 +45,15 @@ function snapshot(activeThreads: string[] = ["worker"]): SessionSnapshotResponse
 function mount({
   phase = "running",
   canSteerWorkers = true,
+  streamStatus = "live",
 }: {
   phase?: "running" | "pending" | "terminal";
   canSteerWorkers?: boolean;
+  streamStatus?: "live" | "reconnecting";
 } = {}) {
   resetRuntime("session");
   runtimeStore.setState({
-    streamStatus: "live",
+    streamStatus,
     threads:
       phase === "running"
         ? {
@@ -184,6 +186,12 @@ describe("classic worker steering", () => {
 
     cleanup();
     mount({ canSteerWorkers: false });
+    expect(screen.queryByRole("button", { name: "Steer" })).toBeNull();
+  });
+
+  it("does not treat an active snapshot entry as steerable while SSE reconnects", () => {
+    mount({ phase: "pending", streamStatus: "reconnecting" });
+
     expect(screen.queryByRole("button", { name: "Steer" })).toBeNull();
   });
 });
