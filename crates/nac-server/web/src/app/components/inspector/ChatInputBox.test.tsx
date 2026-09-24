@@ -307,6 +307,65 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("responsive Enter behavior", () => {
+  it("lets mobile Enter insert a newline without submitting", () => {
+    mobile = true;
+    const textarea = composer();
+    type(textarea, "line one");
+
+    expect(textarea.getAttribute("enterkeyhint")).toBe("enter");
+    expect(fireEvent.keyDown(textarea, { key: "Enter" })).toBe(true);
+
+    expect(textarea.value).toBe("line one");
+    expect(fakes.submitRun).not.toHaveBeenCalled();
+    expect(fakes.compactSession).not.toHaveBeenCalled();
+  });
+
+  it("lets mobile Enter insert a newline while a suggestion is open", () => {
+    mobile = true;
+    const textarea = composer();
+    type(textarea, "/co");
+
+    expect(screen.getByRole("option", { name: /compact/i })).toBeTruthy();
+    expect(fireEvent.keyDown(textarea, { key: "Enter" })).toBe(true);
+
+    expect(textarea.value).toBe("/co");
+    expect(screen.getByRole("option", { name: /compact/i })).toBeTruthy();
+    expect(fakes.compactSession).not.toHaveBeenCalled();
+    expect(fakes.submitRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["metaKey", "ctrlKey"] as const)(
+    "uses mobile %s+Enter to complete before executing a suggestion",
+    async (modifier) => {
+      mobile = true;
+      const textarea = composer();
+      type(textarea, "/co");
+
+      expect(fireEvent.keyDown(textarea, { key: "Enter", [modifier]: true })).toBe(false);
+      expect(textarea.value).toBe("/compact");
+      expect(fakes.compactSession).not.toHaveBeenCalled();
+      expect(fakes.submitRun).not.toHaveBeenCalled();
+
+      expect(fireEvent.keyDown(textarea, { key: "Enter", [modifier]: true })).toBe(false);
+      await waitFor(() => expect(fakes.compactSession).toHaveBeenCalledWith("session"));
+      expect(fakes.submitRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps desktop bare Enter submission and Shift+Enter newline behavior", async () => {
+    const textarea = composer();
+    type(textarea, "desktop prompt");
+
+    expect(textarea.getAttribute("enterkeyhint")).toBeNull();
+    expect(fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true })).toBe(true);
+    expect(fakes.submitRun).not.toHaveBeenCalled();
+
+    expect(fireEvent.keyDown(textarea, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(fakes.submitRun).toHaveBeenCalledWith("session", "desktop prompt"));
+  });
+});
+
 describe("slash-command suggestions", () => {
   it("offers goal commands only to direct behaviors", () => {
     const orchestrator = composer({ behavior: "orchestrator" });

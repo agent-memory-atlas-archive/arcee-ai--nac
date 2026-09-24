@@ -886,6 +886,7 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
           aria-controls={suggestionsOpen ? listboxId : undefined}
           aria-activedescendant={activeOptionId}
           aria-describedby={history.active ? previewHelpId : undefined}
+          enterKeyHint={isMobile ? "enter" : undefined}
           // A preview stands where the placeholder would, rather than in the
           // field, so an earlier prompt can be read before it is taken. The row
           // below draws it, hence the blank here.
@@ -949,6 +950,10 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
           }}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
+            // A phone's virtual keyboard has no Shift+Enter affordance. Leave
+            // Enter native there, including while suggestions are open;
+            // hardware keyboards can still explicitly send with Cmd/Ctrl+Enter.
+            if (event.key === "Enter" && isMobile && !event.metaKey && !event.ctrlKey) return;
             if (suggestionsOpen && !event.shiftKey) {
               if (event.key === "Escape") {
                 event.preventDefault();
