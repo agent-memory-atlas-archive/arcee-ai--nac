@@ -28,7 +28,14 @@ export function SteeringPromptModal({
   const close = submitting ? undefined : onClose;
 
   return (
-    <Modal open={open} onClose={close} size={ModalSize.Wide} title={title} subheader={subheader}>
+    <Modal
+      open={open}
+      onClose={close}
+      onNavigate={onClose}
+      size={ModalSize.Wide}
+      title={title}
+      subheader={subheader}
+    >
       <div className="flex flex-col gap-4">
         <TextArea
           label="Steering message"

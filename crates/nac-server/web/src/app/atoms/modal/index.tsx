@@ -36,6 +36,12 @@ export enum ModalSize {
 interface ModalProps {
   open: boolean;
   onClose?: () => void;
+  /**
+   * Optional route-change dismissal kept separate from manual dismissal. A
+   * submitting dialog can hide its close affordances without surviving over
+   * the destination route.
+   */
+  onNavigate?: () => void;
   title?: React.ReactNode;
   /** Secondary row under the title, inside the same header block. */
   subheader?: React.ReactNode;
@@ -84,6 +90,7 @@ interface ModalProps {
 const Modal: React.FC<ModalProps> & { Size: typeof ModalSize } = ({
   open,
   onClose,
+  onNavigate,
   title,
   subheader,
   headerActions,
@@ -211,10 +218,10 @@ const Modal: React.FC<ModalProps> & { Size: typeof ModalSize } = ({
       open &&
       !keepOnNavigate
     ) {
-      onClose?.();
+      (onNavigate ?? onClose)?.();
     }
     previousPathnameRef.current = location.pathname;
-  }, [location.pathname, open, onClose, keepOnNavigate]);
+  }, [location.pathname, open, onClose, onNavigate, keepOnNavigate]);
 
   if (!mounted) return null;
 

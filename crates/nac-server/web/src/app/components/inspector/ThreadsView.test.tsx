@@ -2,7 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadsView } from "@/app/components/inspector/ThreadsView";
@@ -21,6 +21,11 @@ vi.mock("@/app/hooks/useMediaQuery", () => ({
 
 const getThreadEvents = vi.spyOn(api, "getThreadEvents");
 const steerThread = vi.spyOn(api, "steerThread");
+
+function NavigateAway() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate("/sessions/next")}>Navigate away</button>;
+}
 
 function snapshot(activeThreads: string[] = ["worker"]): SessionSnapshotResponse {
   return {
@@ -75,6 +80,7 @@ function mount({
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <ToastProvider>
+          <NavigateAway />
           <ThreadsView
             snapshot={snapshot(phase === "terminal" ? [] : ["worker"])}
             selected="worker"
@@ -208,6 +214,42 @@ describe("classic worker steering", () => {
     await waitFor(() =>
       expect(screen.queryByRole("textbox", { name: "Steering message" })).toBeNull(),
     );
+  });
+
+  it("dismisses an in-flight steering modal when the route changes", async () => {
+    const accepted = Promise.withResolvers<{
+      steering_id: number;
+      thread_name: string;
+      status: string;
+      instruction_preview: string;
+    }>();
+    steerThread.mockReturnValueOnce(accepted.promise);
+    mount();
+
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Steering message" }), {
+      target: { value: "finish on the original route" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send steering" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Steering message" })).toHaveProperty(
+        "disabled",
+        true,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Navigate away" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Steering message" })).toBeNull(),
+    );
+    expect(steerThread).toHaveBeenCalledWith("session", "worker", "finish on the original route");
+
+    accepted.resolve({
+      steering_id: 10,
+      thread_name: "worker",
+      status: "queued",
+      instruction_preview: "finish on the original route",
+    });
   });
 
   it("keeps all narrow-mobile thread controls in a horizontal scroll region", () => {
