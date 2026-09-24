@@ -56,6 +56,7 @@ import {
   useSessionGoal,
   useSessionInbox,
   useSshConnect,
+  useSteerOrchestrator,
   useSessionSkills,
   useSubmitRun,
   useSlashCommands,
@@ -286,6 +287,7 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
   const toast = useToast();
   const actions = useSessionActions();
   const submitRun = useSubmitRun();
+  const steerOrchestrator = useSteerOrchestrator();
   const compactSession = useCompactSession();
   const createInboxItem = useCreateInboxItem();
   const updateInboxItem = useUpdateInboxItem();
@@ -348,8 +350,11 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
   const isSsh = sessionEnvLabel(entry?.summary) === ENV_SSH;
 
   const runningDirect = running && direct && !readOnly;
+  const runningClassic = running && behavior === "orchestrator" && !readOnly;
+  const runningInteractive = runningDirect || runningClassic;
   const mutationPending =
     submitRun.isPending ||
+    steerOrchestrator.isPending ||
     compactSession.isPending ||
     createInboxItem.isPending ||
     updateInboxItem.isPending ||
@@ -357,7 +362,7 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
     createGoal.isPending ||
     updateGoal.isPending ||
     clearGoal.isPending;
-  const busy = mutationPending || stopping || (running && !runningDirect);
+  const busy = mutationPending || stopping || (running && !runningInteractive);
   const canSend = Boolean(value.trim()) && !busy;
   const pendingInbox = (inboxQuery.data ?? []).filter((item) => item.status === "pending");
   const changeInboxDelivery = async (
@@ -721,6 +726,8 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
             const delivery = requestedDelivery ?? "steer";
             await createInboxItem.mutateAsync({ sessionId, delivery, prompt });
             pushLocalEvent("steering", `▶ ${delivery}: ${prompt.slice(0, 80)}`);
+          } else if (runningClassic) {
+            await steerOrchestrator.mutateAsync({ id: sessionId, instruction: prompt });
           } else {
             await submitRun.mutateAsync({ id: sessionId, prompt });
             pushLocalEvent("run", `▶ submitted: ${prompt.slice(0, 80)}`);
@@ -747,7 +754,9 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
       rowPx,
       resetHistory,
       createInboxItem,
+      steerOrchestrator,
       runGoalCommand,
+      runningClassic,
       runningDirect,
     ],
   );
@@ -777,13 +786,13 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
     </Tooltip>
   );
 
-  const stoppingRun = running && !runningDirect;
+  const stoppingRun = running && !runningInteractive;
   const sendIcon = <Icon iconName={stoppingRun || stopping ? IconName.Stop : IconName.Plane} />;
   const sendLabel = stopping
     ? "Stopping run"
     : stoppingRun
       ? "Stop run"
-      : runningDirect
+      : runningInteractive
         ? "Steer active run"
         : "Send";
   const sendType = stoppingRun || stopping ? "button" : "submit";
@@ -1224,17 +1233,19 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
         )}
       >
         <div className="flex flex-1 min-w-0 flex-wrap items-center gap-y-1 gap-x-4">
-          {runningDirect ? (
+          {runningInteractive ? (
             <>
-              <Button
-                type="button"
-                size={ButtonSize.Small}
-                variant={ButtonVariant.Secondary}
-                disabled={!canSend}
-                onClick={() => void submit(value, "queue")}
-              >
-                Queue Next
-              </Button>
+              {runningDirect ? (
+                <Button
+                  type="button"
+                  size={ButtonSize.Small}
+                  variant={ButtonVariant.Secondary}
+                  disabled={!canSend}
+                  onClick={() => void submit(value, "queue")}
+                >
+                  Queue Next
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 size={ButtonSize.Small}

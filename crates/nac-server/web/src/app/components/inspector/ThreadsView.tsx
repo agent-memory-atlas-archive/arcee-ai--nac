@@ -34,6 +34,7 @@ import {
   PanelSplit,
 } from "@/app/components/inspector/PanelSplit";
 import { TaskButton, TaskPill } from "@/app/components/inspector/TaskPreview";
+import { ThreadSteeringModal } from "@/app/components/inspector/ThreadSteeringModal";
 import { cn } from "@/app/lib/cn";
 import { Markdown } from "@/app/lib/markdown";
 import { STICK_TOLERANCE_PX, distanceFromBottom, scrollToBottomInstantly } from "@/app/lib/scroll";
@@ -525,11 +526,15 @@ const THREAD_DETAIL_VIEWS: ThreadDetailView[] = ["log", "overview"];
 function ViewPills({
   view,
   action,
+  canSteer,
+  onSteer,
   onChange,
 }: {
   view: ThreadDetailView;
   /** What the open thread was asked to do, if the dispatch is known. */
   action: string;
+  canSteer: boolean;
+  onSteer: () => void;
   onChange: (view: ThreadDetailView) => void;
 }) {
   return (
@@ -553,6 +558,13 @@ function ViewPills({
       {action ? (
         <div className="flex shrink-0 rounded-full bg-elevation-level-3 shadow-2xl overflow-hidden">
           <TaskPill action={action} />
+        </div>
+      ) : null}
+      {canSteer ? (
+        <div className="flex shrink-0 rounded-full bg-elevation-level-3 shadow-2xl overflow-hidden">
+          <Button size={ButtonSize.Medium} variant={ButtonVariant.Secondary} onClick={onSteer}>
+            Steer
+          </Button>
         </div>
       ) : null}
     </div>
@@ -629,6 +641,8 @@ function Detail({
   onLoadOlder,
   onRetry,
   view,
+  canSteer,
+  onSteer,
   onViewChange,
 }: {
   thread: ThreadSnapshot;
@@ -647,6 +661,8 @@ function Detail({
   onLoadOlder: () => Promise<void>;
   onRetry: () => Promise<void>;
   view: ThreadDetailView;
+  canSteer: boolean;
+  onSteer: () => void;
   onViewChange: (view: ThreadDetailView) => void;
 }) {
   const isMobile = useIsMobile();
@@ -678,7 +694,15 @@ function Detail({
     return (
       <div className="relative flex flex-col flex-1 min-h-0 min-w-0">
         {body}
-        {isMobile ? <ViewPills view={view} action={action} onChange={onViewChange} /> : null}
+        {isMobile ? (
+          <ViewPills
+            view={view}
+            action={action}
+            canSteer={canSteer}
+            onSteer={onSteer}
+            onChange={onViewChange}
+          />
+        ) : null}
       </div>
     );
   }
@@ -700,6 +724,11 @@ function Detail({
           </div>
           <span className="code code-micro text-basic-muted truncate">{thread.updated_at}</span>
         </div>
+        {canSteer ? (
+          <Button size={ButtonSize.Small} variant={ButtonVariant.Secondary} onClick={onSteer}>
+            Steer
+          </Button>
+        ) : null}
         <ViewSwitcher view={view} onChange={onViewChange} />
         <span className="shrink-0 text-micro text-basic-muted">{episodes.length} ep</span>
       </div>
@@ -717,15 +746,19 @@ export function ThreadsView({
   snapshot,
   selected,
   onSelect,
+  canSteerWorkers,
 }: {
   snapshot: SessionSnapshotResponse | null;
   /** Thread the chat pointed at, if any. */
   selected: string | null;
   onSelect: (name: string) => void;
+  /** True only for the user-owned primary classic orchestrator transcript. */
+  canSteerWorkers: boolean;
 }) {
   const liveThreads = useLiveThreads();
   const streamStatus = useStreamStatus();
   const [view, setView] = useState<ThreadDetailView>("log");
+  const [steeringThread, setSteeringThread] = useState<string | null>(null);
   const threads = useMemo(() => snapshot?.threads ?? [], [snapshot]);
   const activeThreads = snapshot?.active_threads;
   const sessionId = snapshot?.metadata.session_id ?? "";
@@ -866,6 +899,7 @@ export function ThreadsView({
   // phone dialog header names that thread instead of the panel label.
   const currentName = current?.name ?? null;
   const currentRunning = Boolean(currentName && runningNames.has(currentName));
+  const canSteerCurrent = canSteerWorkers && currentRunning;
   const eventPages = useThreadEventPages(snapshot ? sessionId : null, currentName);
   const pagedEvents = useMemo(
     () => (eventPages.data ? mergeThreadEventPages(eventPages.data.pages) : undefined),
@@ -921,108 +955,134 @@ export function ThreadsView({
   if (!snapshot) return <PanelLoading listTitle="Threads" />;
 
   return (
-    <PanelSplit
-      listTitle="Threads"
-      title={current?.name}
-      titleAction={currentAction ? <TaskButton action={currentAction} /> : null}
-      actions={current ? <ThreadViewSelect view={view} onChange={setView} /> : null}
-      list={
-        ordered.length === 0 ? (
-          <div className="flex flex-col px-2 pb-4 pt-2 text-micro">
-            <p className="text-basic-tertiary">No threads yet.</p>
-            <p className="text-basic-muted">Start a conversation to create one.</p>
-          </div>
+    <>
+      <PanelSplit
+        listTitle="Threads"
+        title={current?.name}
+        titleAction={currentAction ? <TaskButton action={currentAction} /> : null}
+        actions={
+          current ? (
+            <div className="flex items-center gap-2">
+              {canSteerCurrent ? (
+                <Button
+                  size={ButtonSize.Small}
+                  variant={ButtonVariant.Secondary}
+                  onClick={() => setSteeringThread(current.name)}
+                >
+                  Steer
+                </Button>
+              ) : null}
+              <ThreadViewSelect view={view} onChange={setView} />
+            </div>
+          ) : null
+        }
+        list={
+          ordered.length === 0 ? (
+            <div className="flex flex-col px-2 pb-4 pt-2 text-micro">
+              <p className="text-basic-tertiary">No threads yet.</p>
+              <p className="text-basic-muted">Start a conversation to create one.</p>
+            </div>
+          ) : (
+            <>
+              {visible.map((thread) => {
+                const pending = pendingNames.has(thread.name);
+                const running = runningNames.has(thread.name);
+                const live = liveThreads[thread.name];
+                const lastEpisode = snapshot.thread_episodes?.[thread.name]?.at(-1);
+                const episodeCount =
+                  snapshot.thread_episodes?.[thread.name]?.length ?? thread.episode_count;
+                const cancelled =
+                  Boolean(live?.cancelled) ||
+                  cancelledNames.has(thread.name) ||
+                  lastEpisode?.status === "cancelled" ||
+                  (!running && !pending && episodeCount === 0);
+                const errored = live?.isError;
+                // The task is the only description a thread has, so the row hands
+                // it over on hover rather than making the name stand for it.
+                const task = actions[thread.name] || thread.latest_action || "";
+                return (
+                  <PanelRow
+                    key={thread.name}
+                    label={thread.name}
+                    active={thread.name === current?.name}
+                    disabled={pending}
+                    title={pending ? "Waiting on source threads" : task || undefined}
+                    icon={
+                      pending ? (
+                        <Icon
+                          iconName={IconName.Timelaps}
+                          size={16}
+                          className="shrink-0 [&>path]:!fill-basic-muted"
+                        />
+                      ) : running ? (
+                        <Loader size={LoaderSize.Micro} variant={LoaderVariant.Neutral} />
+                      ) : cancelled ? (
+                        <Icon
+                          iconName={IconName.Close}
+                          size={16}
+                          className="shrink-0 [&>path]:!fill-basic-muted"
+                        />
+                      ) : (
+                        <Icon
+                          iconName={errored ? IconName.Danger : IconName.CheckCircle}
+                          size={16}
+                          className={cn("shrink-0", errored && "text-error-primary")}
+                        />
+                      )
+                    }
+                    trailing={
+                      <span className="code code-micro text-basic-muted shrink-0">
+                        {snapshot.thread_episodes?.[thread.name]?.length ?? thread.episode_count}
+                      </span>
+                    }
+                    onClick={() => onSelect(thread.name)}
+                  />
+                );
+              })}
+              {hasMore ? <div ref={sentinelRef} aria-hidden className="h-px" /> : null}
+            </>
+          )
+        }
+      >
+        {current ? (
+          <Detail
+            key={`${sessionId}:${current.name}`}
+            thread={current}
+            action={currentAction}
+            episodes={snapshot.thread_episodes?.[current.name] ?? []}
+            events={pagedEvents ?? snapshot.thread_events?.[current.name]}
+            liveLog={live?.log ?? []}
+            running={runningNames.has(current.name)}
+            hasOlder={Boolean(eventPages.hasNextPage)}
+            loadingOlder={eventPages.isFetchingNextPage}
+            loadingInitial={eventPages.isPending}
+            historyError={eventPages.error instanceof Error ? eventPages.error.message : null}
+            onLoadOlder={async () => {
+              await eventPages.fetchNextPage();
+            }}
+            onRetry={async () => {
+              if (eventPages.data) await eventPages.fetchNextPage();
+              else await eventPages.refetch();
+            }}
+            view={view}
+            canSteer={canSteerCurrent}
+            onSteer={() => setSteeringThread(current.name)}
+            onViewChange={setView}
+          />
         ) : (
-          <>
-            {visible.map((thread) => {
-              const pending = pendingNames.has(thread.name);
-              const running = runningNames.has(thread.name);
-              const live = liveThreads[thread.name];
-              const lastEpisode = snapshot.thread_episodes?.[thread.name]?.at(-1);
-              const episodeCount =
-                snapshot.thread_episodes?.[thread.name]?.length ?? thread.episode_count;
-              const cancelled =
-                Boolean(live?.cancelled) ||
-                cancelledNames.has(thread.name) ||
-                lastEpisode?.status === "cancelled" ||
-                (!running && !pending && episodeCount === 0);
-              const errored = live?.isError;
-              // The task is the only description a thread has, so the row hands
-              // it over on hover rather than making the name stand for it.
-              const task = actions[thread.name] || thread.latest_action || "";
-              return (
-                <PanelRow
-                  key={thread.name}
-                  label={thread.name}
-                  active={thread.name === current?.name}
-                  disabled={pending}
-                  title={pending ? "Waiting on source threads" : task || undefined}
-                  icon={
-                    pending ? (
-                      <Icon
-                        iconName={IconName.Timelaps}
-                        size={16}
-                        className="shrink-0 [&>path]:!fill-basic-muted"
-                      />
-                    ) : running ? (
-                      <Loader size={LoaderSize.Micro} variant={LoaderVariant.Neutral} />
-                    ) : cancelled ? (
-                      <Icon
-                        iconName={IconName.Close}
-                        size={16}
-                        className="shrink-0 [&>path]:!fill-basic-muted"
-                      />
-                    ) : (
-                      <Icon
-                        iconName={errored ? IconName.Danger : IconName.CheckCircle}
-                        size={16}
-                        className={cn("shrink-0", errored && "text-error-primary")}
-                      />
-                    )
-                  }
-                  trailing={
-                    <span className="code code-micro text-basic-muted shrink-0">
-                      {snapshot.thread_episodes?.[thread.name]?.length ?? thread.episode_count}
-                    </span>
-                  }
-                  onClick={() => onSelect(thread.name)}
-                />
-              );
-            })}
-            {hasMore ? <div ref={sentinelRef} aria-hidden className="h-px" /> : null}
-          </>
-        )
-      }
-    >
-      {current ? (
-        <Detail
-          key={`${sessionId}:${current.name}`}
-          thread={current}
-          action={currentAction}
-          episodes={snapshot.thread_episodes?.[current.name] ?? []}
-          events={pagedEvents ?? snapshot.thread_events?.[current.name]}
-          liveLog={live?.log ?? []}
-          running={runningNames.has(current.name)}
-          hasOlder={Boolean(eventPages.hasNextPage)}
-          loadingOlder={eventPages.isFetchingNextPage}
-          loadingInitial={eventPages.isPending}
-          historyError={eventPages.error instanceof Error ? eventPages.error.message : null}
-          onLoadOlder={async () => {
-            await eventPages.fetchNextPage();
-          }}
-          onRetry={async () => {
-            if (eventPages.data) await eventPages.fetchNextPage();
-            else await eventPages.refetch();
-          }}
-          view={view}
-          onViewChange={setView}
+          <PanelEmpty title="No thread selected">
+            Threads contain conversations, command output, and file changes for each task. Select a
+            thread to view its details.
+          </PanelEmpty>
+        )}
+      </PanelSplit>
+      {steeringThread ? (
+        <ThreadSteeringModal
+          sessionId={sessionId}
+          threadName={steeringThread}
+          onClose={() => setSteeringThread(null)}
         />
-      ) : (
-        <PanelEmpty title="No thread selected">
-          Threads contain conversations, command output, and file changes for each task. Select a
-          thread to view its details.
-        </PanelEmpty>
-      )}
-    </PanelSplit>
+      ) : null}
+    </>
   );
 }

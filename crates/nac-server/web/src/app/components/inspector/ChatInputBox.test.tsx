@@ -28,6 +28,7 @@ const fakes = {
   listCommands: vi.fn(),
   listSessionSkills: vi.fn(),
   submitRun: vi.fn(),
+  steerOrchestrator: vi.fn(),
   compactSession: vi.fn(),
   createInboxItem: vi.fn(),
   updateInboxItem: vi.fn(),
@@ -45,6 +46,9 @@ vi.spyOn(api, "listSessionSkills").mockImplementation((...args) =>
   fakes.listSessionSkills(...args),
 );
 vi.spyOn(api, "submitRun").mockImplementation((...args) => fakes.submitRun(...args));
+vi.spyOn(api, "steerOrchestrator").mockImplementation((...args) =>
+  fakes.steerOrchestrator(...args),
+);
 vi.spyOn(api, "compactSession").mockImplementation((...args) => fakes.compactSession(...args));
 vi.spyOn(api, "createInboxItem").mockImplementation((...args) => fakes.createInboxItem(...args));
 vi.spyOn(api, "updateInboxItem").mockImplementation((...args) => fakes.updateInboxItem(...args));
@@ -243,6 +247,7 @@ beforeEach(() => {
     client_id: null,
     display_prompt: "prompt",
   });
+  fakes.steerOrchestrator.mockReset().mockResolvedValue({ status: "queued" });
   fakes.compactSession.mockReset().mockResolvedValue({
     status: "compacted",
     compaction_id: "compaction",
@@ -665,6 +670,55 @@ describe("direct inbox and goal journeys", () => {
     );
     expect(fakes.submitRun).not.toHaveBeenCalled();
     expect(textarea.value).toBe("");
+  });
+
+  it("steers an active classic orchestrator while keeping Stop separate", async () => {
+    syncRunFromSnapshot({
+      run_id: "run-live",
+      prompt_preview: "working",
+      started_at_epoch_ms: Date.now(),
+    });
+    const textarea = composer({ behavior: "orchestrator" });
+    type(textarea, "adjust the orchestration");
+
+    fireEvent.click(screen.getByRole("button", { name: "Steer active run" }));
+
+    await waitFor(() =>
+      expect(fakes.steerOrchestrator).toHaveBeenCalledWith("session", "adjust the orchestration"),
+    );
+    expect(fakes.submitRun).not.toHaveBeenCalled();
+    expect(fakes.createInboxItem).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("");
+    expect(screen.getByRole("button", { name: "Stop run" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Queue Next" })).toBeNull();
+  });
+
+  it("keeps a classic steering draft when the active run finishes before acceptance", async () => {
+    fakes.steerOrchestrator.mockRejectedValueOnce(new Error("the active run already finished"));
+    syncRunFromSnapshot({
+      run_id: "run-live",
+      prompt_preview: "working",
+      started_at_epoch_ms: Date.now(),
+    });
+    const textarea = composer({ behavior: "orchestrator" });
+    type(textarea, "preserve this steer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Steer active run" }));
+
+    expect(await screen.findByText(/Failed to send: The active run already finished/)).toBeTruthy();
+    expect(textarea.value).toBe("preserve this steer");
+  });
+
+  it("keeps idle classic orchestrator submission unchanged", async () => {
+    const textarea = composer({ behavior: "orchestrator" });
+    type(textarea, "start ordinary work");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(fakes.submitRun).toHaveBeenCalledWith("session", "start ordinary work"),
+    );
+    expect(fakes.steerOrchestrator).not.toHaveBeenCalled();
   });
 
   it("offers Queue Next and a separate direct-run stop action", async () => {

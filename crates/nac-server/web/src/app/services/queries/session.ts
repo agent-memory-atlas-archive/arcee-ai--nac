@@ -384,6 +384,27 @@ export function useSubmitRun() {
   });
 }
 
+export function useSteerOrchestrator() {
+  return useMutation({
+    mutationFn: ({ id, instruction }: { id: string; instruction: string }) =>
+      api.steerOrchestrator(id, instruction),
+  });
+}
+
+export function useSteerThread() {
+  return useMutation({
+    mutationFn: ({
+      id,
+      threadName,
+      instruction,
+    }: {
+      id: string;
+      threadName: string;
+      instruction: string;
+    }) => api.steerThread(id, threadName, instruction),
+  });
+}
+
 export function useCancelRun() {
   const invalidate = useQueryInvalidators();
   const client = useQueryClient();
