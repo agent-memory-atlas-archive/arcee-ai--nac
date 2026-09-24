@@ -586,11 +586,79 @@ fn buffered_codex_sse_preserves_transient_retry_metadata() {
     .unwrap_err();
 
     assert!(error.can_retry_stream());
+    assert_eq!(error.kind, RunFailureKind::Capacity);
     assert!(error.to_string().contains("You can retry your request"));
+}
+
+#[test]
+fn buffered_codex_sse_preserves_provider_and_protocol_classification() {
+    for (body, expected_kind, retryable) in [
+        (
+            "data: {\"type\":\"error\",\"error\":{\"code\":\"invalid_request_error\",\"message\":\"invalid request\"}}\n\n",
+            RunFailureKind::Validation,
+            false,
+        ),
+        (
+            "data: {not-json}\n\n",
+            RunFailureKind::Protocol,
+            false,
+        ),
+    ] {
+        let error = parse_codex_success_body(
+            "https://chatgpt.com/backend-api/codex/responses",
+            StatusCode::OK,
+            Some("application/json"),
+            body,
+            &[],
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, expected_kind);
+        assert_eq!(error.can_retry_stream(), retryable);
+    }
+}
+
+#[tokio::test]
+async fn buffered_codex_sse_exhaustion_preserves_retry_after() {
+    use super::super::test_http::{ScriptedResponse, ScriptedServer};
+
+    let overloaded = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":",
+        "{\"type\":\"overloaded_error\",\"message\":\"provider busy\"}}}\n\n"
+    );
+    let server = ScriptedServer::start(
+        (0..10)
+            .map(|_| ScriptedResponse::json("200 OK", overloaded).with_header("Retry-After", "0"))
+            .collect(),
+    );
+    let failure = post_codex_json_with_retry_delay(
+        &Client::new(),
+        &server.base_url,
+        &json!({"stream": true}),
+        &stored_codex_auth("access-token"),
+        None,
+        None,
+        |_| Duration::ZERO,
+    )
+    .await
+    .unwrap_err()
+    .into_run_failure();
+
+    assert_eq!(server.finish().len(), 10);
+    assert_eq!(failure.kind, RunFailureKind::Capacity);
+    assert_eq!(failure.retry_after_ms, Some(0));
+    assert_eq!(failure.attempt_count, 10);
 }
 
 async fn scripted_codex_sse_server(
     bodies: Vec<&'static str>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    scripted_codex_sse_server_with_retry_after(bodies, None).await
+}
+
+async fn scripted_codex_sse_server_with_retry_after(
+    bodies: Vec<&'static str>,
+    retry_after: Option<&'static str>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -602,9 +670,12 @@ async fn scripted_codex_sse_server(
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 16 * 1024];
             let _ = stream.read(&mut request).await.unwrap();
+            let retry_after_header = retry_after
+                .map(|value| format!("Retry-After: {value}\r\n"))
+                .unwrap_or_default();
             let headers = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                 Content-Length: {}\r\n{retry_after_header}Connection: close\r\n\r\n",
                 body.len()
             );
             stream.write_all(headers.as_bytes()).await.unwrap();
@@ -765,9 +836,13 @@ async fn does_not_retry_permanent_or_malformed_codex_sse_error() {
         "data: {\"type\":\"error\",\"error\":{\"code\":\"insufficient_quota\",",
         "\"message\":\"quota exhausted\"}}\n\n"
     );
-    for (body, expected_error) in [
-        (permanent, "quota exhausted"),
-        ("data: {not-json}\n\n", "invalid SSE event"),
+    for (body, expected_error, expected_kind) in [
+        (permanent, "quota exhausted", RunFailureKind::Validation),
+        (
+            "data: {not-json}\n\n",
+            "invalid SSE event",
+            RunFailureKind::Protocol,
+        ),
     ] {
         let (address, server) = scripted_codex_sse_server(vec![body]).await;
         let error = timeout(
@@ -789,7 +864,10 @@ async fn does_not_retry_permanent_or_malformed_codex_sse_error() {
             .await
             .expect("expected exactly one request")
             .unwrap();
-        assert!(error.to_string().contains(expected_error), "{error}");
+        let failure = error.into_run_failure();
+        assert!(failure.diagnostic.contains(expected_error), "{failure}");
+        assert_eq!(failure.kind, expected_kind);
+        assert!(!failure.transient);
     }
 }
 
@@ -807,7 +885,7 @@ async fn exhausts_transient_codex_sse_retries_with_final_provider_error() {
     );
     let mut bodies = vec![overloaded; 9];
     bodies.push(final_overloaded);
-    let (address, server) = scripted_codex_sse_server(bodies).await;
+    let (address, server) = scripted_codex_sse_server_with_retry_after(bodies, Some("0")).await;
     let error = timeout(
         Duration::from_secs(2),
         post_codex_json_with_retry_delay(
@@ -822,13 +900,94 @@ async fn exhausts_transient_codex_sse_retries_with_final_provider_error() {
     )
     .await
     .expect("bounded transient stream retries timed out")
-    .unwrap_err();
+    .unwrap_err()
+    .into_run_failure();
 
     timeout(Duration::from_secs(1), server)
         .await
         .expect("expected exactly ten requests")
         .unwrap();
-    assert!(error.to_string().contains("final provider failure"));
+    assert_eq!(error.kind, RunFailureKind::Capacity);
+    assert_eq!(error.phase, RunFailurePhase::Stream);
+    assert!(error.transient);
+    assert_eq!(error.attempt_count, 10);
+    assert_eq!(error.retry_after_ms, Some(0));
+    assert!(error.diagnostic.contains("final provider failure"));
+}
+
+#[test]
+fn provider_retry_after_is_a_minimum_for_same_round_retries() {
+    assert_eq!(
+        bounded_retry_delay(Duration::from_millis(200), Some(Duration::from_secs(2))),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        bounded_retry_delay(Duration::from_secs(3), Some(Duration::from_secs(2))),
+        Duration::from_secs(3)
+    );
+    assert_eq!(
+        bounded_retry_delay(Duration::from_millis(200), None),
+        Duration::from_millis(200)
+    );
+}
+
+#[tokio::test]
+async fn capacity_classification_and_partial_output_do_not_depend_on_a_live_observer() {
+    use std::sync::mpsc;
+    use tokio::time::timeout;
+
+    let partial_overload = concat!(
+        "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking\"}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\"}\n\n",
+        "data: {\"type\":\"error\",\"error\":{\"code\":\"server_error\",",
+        "\"message\":\"Our servers are currently overloaded.\"}}\n\n"
+    );
+
+    for observed in [false, true] {
+        let (address, server) = scripted_codex_sse_server(vec![partial_overload; 10]).await;
+        let (send, receive) = mpsc::channel();
+        let sink = move |delta| send.send(delta).expect("delta receiver should remain live");
+        let failure = timeout(
+            Duration::from_secs(2),
+            post_codex_json_with_retry_delay(
+                &Client::new(),
+                &format!("http://{address}"),
+                &json!({"stream": true}),
+                &stored_codex_auth("access-token"),
+                None,
+                observed.then_some(&sink),
+                |_| Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("capacity exhaustion timed out")
+        .unwrap_err()
+        .into_run_failure();
+
+        timeout(Duration::from_secs(1), server)
+            .await
+            .expect("expected exactly ten requests")
+            .unwrap();
+        assert_eq!(failure.kind, RunFailureKind::Capacity);
+        assert_eq!(failure.phase, RunFailurePhase::Stream);
+        assert!(failure.transient);
+        assert_eq!(failure.attempt_count, 10);
+        assert_eq!(
+            failure.partial_output,
+            PartialModelOutput {
+                text: true,
+                reasoning: true,
+                tool_call: true,
+            }
+        );
+        let deltas = receive.try_iter().collect::<Vec<_>>();
+        if observed {
+            assert_eq!(deltas.iter().filter(|delta| delta.reset).count(), 9);
+        } else {
+            assert!(deltas.is_empty());
+        }
+    }
 }
 
 #[tokio::test]

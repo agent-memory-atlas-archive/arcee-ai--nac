@@ -156,7 +156,7 @@ fn responses_event_error(event: &Value, fallback: &str) -> StreamFoldError {
     let message =
         responses_event_error_message(event).unwrap_or_else(|| format!("{fallback}: {event}"));
     if responses_event_is_retryable(event, &message) {
-        StreamFoldError::retryable(message)
+        StreamFoldError::capacity(message)
     } else {
         StreamFoldError::permanent(message)
     }
@@ -189,6 +189,7 @@ fn responses_event_is_retryable(event: &Value, message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run_failure::RunFailureKind;
     use serde_json::json;
     use std::sync::mpsc;
 
@@ -205,6 +206,7 @@ mod tests {
             let mut fold = ResponsesStreamFold::new(None);
             let error = fold.push(&event).unwrap_err();
             assert!(error.is_retryable(), "event should be retryable: {event}");
+            assert_eq!(error.kind(), RunFailureKind::Capacity);
         }
 
         let permanent = [
@@ -217,6 +219,7 @@ mod tests {
             let mut fold = ResponsesStreamFold::new(None);
             let error = fold.push(&event).unwrap_err();
             assert!(!error.is_retryable(), "event should be permanent: {event}");
+            assert_eq!(error.kind(), RunFailureKind::Validation);
         }
     }
 
