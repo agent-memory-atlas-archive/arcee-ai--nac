@@ -21,6 +21,10 @@ pub struct CreateModelConfigurationRequest {
     pub model: String,
     /// Defaults to the provider's canonical URL.
     pub base_url: Option<String>,
+    /// Explicitly permit sending credentials and model traffic over public plaintext HTTP.
+    #[serde(default)]
+    #[schema(default = false)]
+    pub allow_insecure_http: bool,
     #[schema(write_only, example = "fake-api-key")]
     pub api_key: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -41,6 +45,8 @@ pub struct UpdateModelConfigurationRequest {
     pub model: RequestField<String>,
     #[serde(default)]
     pub base_url: RequestField<String>,
+    #[serde(default)]
+    pub allow_insecure_http: RequestField<bool>,
     #[serde(default)]
     #[schema(write_only, example = "fake-replacement-key")]
     pub api_key: RequestField<String>,
@@ -67,6 +73,7 @@ pub struct ResolvedModelConfiguration {
     #[schema(required)]
     pub model: Option<String>,
     pub base_url: String,
+    pub allow_insecure_http: bool,
     #[schema(required)]
     pub api_key_env: Option<String>,
     #[schema(required)]
@@ -84,6 +91,7 @@ impl From<application::model_configurations::ResolvedModelConfiguration>
             backend: value.backend,
             model: value.model,
             base_url: value.base_url,
+            allow_insecure_http: value.allow_insecure_http,
             api_key_env: value.api_key_env,
             reasoning_effort: value.reasoning_effort,
             models: value.models,
@@ -139,6 +147,7 @@ pub(crate) async fn create_handler(
             backend: request.backend,
             model: request.model,
             base_url: request.base_url,
+            allow_insecure_http: request.allow_insecure_http,
             api_key: request.api_key,
             reasoning_effort: request.reasoning_effort,
             extra_headers: request.extra_headers,
@@ -172,6 +181,7 @@ pub(crate) async fn update_handler(
             backend: field(request.backend),
             model: field(request.model),
             base_url: field(request.base_url),
+            allow_insecure_http: field(request.allow_insecure_http),
             api_key: field(request.api_key),
             reasoning_effort: field(request.reasoning_effort),
             extra_headers: field(request.extra_headers),

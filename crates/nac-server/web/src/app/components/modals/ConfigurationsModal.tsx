@@ -14,6 +14,7 @@ import {
   type SelectItem,
   Separator,
   StickyButton,
+  Switch,
   TextArea,
 } from "@/app/atoms";
 import { ConfigListNav } from "@/app/components/modals/ConfigListNav";
@@ -171,6 +172,7 @@ function ConfigurationForm({
   // user writes a name of their own.
   const [nameDraft, setNameDraft] = useState<string | null>(record?.name ?? null);
   const [baseUrl, setBaseUrl] = useState(record?.base_url ?? "");
+  const [allowInsecureHttp, setAllowInsecureHttp] = useState(record?.allow_insecure_http ?? false);
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(record?.model ?? "");
   const [reasoning, setReasoning] = useState(record?.reasoning_effort ?? "");
@@ -314,6 +316,7 @@ function ConfigurationForm({
           name: name.trim(),
           backend,
           model: chosenModel.trim(),
+          allow_insecure_http: allowInsecureHttp,
           reasoning_effort: selectedReasoning,
           extra_headers: extraHeaders,
           orchestrator_compaction_threshold: threshold,
@@ -336,6 +339,7 @@ function ConfigurationForm({
           backend,
           model: chosenModel.trim(),
           base_url: baseUrl.trim() || null,
+          allow_insecure_http: allowInsecureHttp,
           api_key: needsKey ? apiKey.trim() : null,
           reasoning_effort: selectedReasoning,
           extra_headers: extraHeaders,
@@ -534,6 +538,24 @@ function ConfigurationForm({
                 value={baseUrl}
                 onChange={(event) => edit(setBaseUrl)(event.target.value)}
               />
+            }
+            verticalOnMobile
+          />
+          <Separator />
+          <ConfigRow
+            label="Allow insecure HTTP"
+            control={
+              <div className="w-full md:w-[280px] flex flex-col items-start gap-1">
+                <Switch
+                  aria-label="Allow insecure HTTP"
+                  checked={allowInsecureHttp}
+                  onChange={edit(setAllowInsecureHttp)}
+                />
+                <p className="body-small text-basic-secondary">
+                  Your API key, prompts, source code, tool output, and model responses may be read
+                  or modified in transit.
+                </p>
+              </div>
             }
             verticalOnMobile
           />

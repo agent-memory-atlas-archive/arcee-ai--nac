@@ -73,10 +73,11 @@ async fn build_run_config_inner(
         light_model
             .as_ref()
             .map(|light| {
-                resolve_light_client(
+                resolve_light_client_with_http_policy(
                     light,
                     &settings.extra_headers,
                     options.model.trusted_light_credential.as_ref(),
+                    settings.allow_insecure_http,
                 )
             })
             .transpose()?
@@ -152,6 +153,7 @@ async fn build_run_config_inner(
             settings.extra_headers.clone(),
         );
         session_snapshot.behavior = behavior;
+        session_snapshot.allow_insecure_http = settings.allow_insecure_http;
         session_snapshot.project_id = project_id.clone();
         session_snapshot.orchestrator_compaction_threshold = orchestrator_compaction_threshold;
         session_snapshot.light_model = light_model;
@@ -256,6 +258,7 @@ async fn build_run_config_inner(
             settings.extra_headers.clone(),
         );
         session_snapshot.behavior = behavior;
+        session_snapshot.allow_insecure_http = settings.allow_insecure_http;
         session_snapshot.project_id = project_id;
         session_snapshot.orchestrator_compaction_threshold = orchestrator_compaction_threshold;
         session_snapshot.light_model = light_model;

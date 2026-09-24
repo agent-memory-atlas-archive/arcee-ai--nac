@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
 use nac_core::{
-    model::{managed_backend_base_url, resolve_model_base_url, BackendKind, ReasoningEffort},
+    model::{managed_backend_base_url, BackendKind, ReasoningEffort},
     runtime::{ModelOptions, OptionalModelOption, SandboxOptions},
     sessions,
 };
@@ -89,6 +89,7 @@ pub(crate) fn model_options(
     reasoning_effort: Field<String>,
     api_key_env: Field<String>,
     extra_headers: Field<BTreeMap<String, String>>,
+    allow_insecure_http: Field<bool>,
 ) -> Result<ModelOptions> {
     let backend = required_create_string(backend, "backend")?
         .map(|value| parse_request_enum::<BackendKind>(&value, "backend"))
@@ -114,11 +115,16 @@ pub(crate) fn model_options(
         Field::Clear => Some(BTreeMap::new()),
         Field::Set(headers) => Some(headers),
     };
+    let allow_insecure_http = match allow_insecure_http {
+        Field::Set(value) => value,
+        Field::Unchanged | Field::Clear => false,
+    };
 
     Ok(ModelOptions {
         backend,
         reasoning_effort,
         api_base_url: required_create_string(base_url, "base_url")?,
+        allow_insecure_http,
         api_model: required_create_string(model, "model")?,
         api_key_env,
         trusted_api_key_file: None,
@@ -158,7 +164,11 @@ pub(crate) fn parse_prospective_model_config(
     } else {
         Some(config.base_url.clone())
     };
-    config.base_url = resolve_model_base_url(backend, stored_base_url)?;
+    config.base_url = nac_core::model::resolve_model_base_url_with_policy(
+        backend,
+        stored_base_url,
+        config.allow_insecure_http,
+    )?;
     if managed_base_url.is_some() && api_key_env_omitted {
         config.api_key_env = None;
     }

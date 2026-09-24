@@ -7,7 +7,7 @@ Model selection is config-first, not environment-driven:
 - NAC never reads `OPENAI_MODEL` or `OPENAI_BASE_URL` and does not infer a backend, model, or endpoint from provider conventions.
 - A created session persists its complete effective model settings. Resume, server attachment, and managed workers use that stored snapshot rather than re-resolving the model tuple or credential selector from ambient config. Non-model runtime settings can still come from the current config.
 
-Persisted session settings remain editable. In `nac-web`, open a session's **Settings** dialog; the equivalent API is `GET /sessions/{session_id}/config` and `PATCH /sessions/{session_id}/config`. PATCH validates the complete prospective model settings and current credentials before committing and leaves the previous snapshot unchanged on failure. Omitted fields are preserved; `null` clears `reasoning_effort` or `api_key_env`, `null` or `{}` clears `extra_headers`, and `null` or `0` disables `orchestrator_compaction_threshold`. Required `backend`, `model`, and `base_url` cannot be cleared. Settings can be opened and repaired even when an invalid or incomplete persisted snapshot cannot resume. A session with an active run must be cancelled before editing its settings; an active manual compaction must be allowed to finish.
+Persisted session settings remain editable. In `nac-web`, open a session's **Settings** dialog; the equivalent API is `GET /sessions/{session_id}/config` and `PATCH /sessions/{session_id}/config`. PATCH validates the complete prospective model settings and current credentials before committing and leaves the previous snapshot unchanged on failure. Omitted fields are preserved; `null` clears `reasoning_effort` or `api_key_env`, `null` or `{}` clears `extra_headers`, `null` or `false` disables `allow_insecure_http`, and `null` or `0` disables `orchestrator_compaction_threshold`. Required `backend`, `model`, and `base_url` cannot be cleared. Settings can be opened and repaired even when an invalid or incomplete persisted snapshot cannot resume. A session with an active run must be cancelled before editing its settings; an active manual compaction must be allowed to finish.
 
 The new-session form and `POST /sessions` share one tri-state rule: omitting a model field inherits its new-session config value, and `null` clears it. So `api_key_env: null` removes a configured selector and `reasoning_effort: null` omits the effort, while `"none"` is a concrete effort value rather than a way to clear it; `extra_headers: {}` replaces configured headers with an empty map. `orchestrator_compaction_threshold` defaults to 70% of the resolved model's context window when omitted and is disabled by `null` or `0`. Resume always uses the value persisted with the session, and managed workers do not inherit this orchestrator-only setting.
 
@@ -16,7 +16,7 @@ The new-session form and `POST /sessions` share one tri-state rule: omitting a m
 A project's optional saved model configuration is a new-session inheritance
 layer. Precedence is: explicit `POST /sessions` field, project configuration,
 working-directory configuration, then built-in resolution. A saved
-configuration supplies `model`, `backend`, `base_url`, `reasoning_effort`,
+configuration supplies `model`, `backend`, `base_url`, `allow_insecure_http`, `reasoning_effort`,
 `api_key_env`, `extra_headers`, `light_model`, and an explicit compaction
 threshold. Its absent reasoning or credential selector clears the
 working-directory value; an empty header map clears working-directory headers;

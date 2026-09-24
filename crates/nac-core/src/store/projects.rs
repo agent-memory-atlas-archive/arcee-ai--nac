@@ -649,6 +649,7 @@ mod tests {
             backend: "openai-responses".to_string(),
             model: "gpt-5.5".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
+            allow_insecure_http: false,
             api_key_env: Some("PROJECT_TEST_KEY".to_string()),
             reasoning_effort: Some("high".to_string()),
             extra_headers: BTreeMap::new(),

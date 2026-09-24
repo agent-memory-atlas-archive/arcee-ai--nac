@@ -61,6 +61,7 @@ function fromSavedConfiguration(record: ModelConfigurationRecord): InheritedMode
       backend: record.backend as BackendKind,
       model: record.model,
       base_url: record.base_url,
+      allow_insecure_http: record.allow_insecure_http,
       api_key_env: record.api_key_env ?? null,
       reasoning_effort: record.reasoning_effort ?? null,
       extra_headers: record.extra_headers,
@@ -80,6 +81,7 @@ function fromSessionConfiguration(
       backend: (config.backend ?? summaryBackend) as BackendKind,
       model: config.model,
       base_url: config.base_url,
+      allow_insecure_http: config.allow_insecure_http,
       api_key_env: config.api_key_env ?? null,
       reasoning_effort: config.reasoning_effort ?? null,
       extra_headers: parseHeaders(config.extra_headers_json),
@@ -200,6 +202,7 @@ function NewChatForm({
         backend: BackendKind;
         model: string;
         base_url: string;
+        allow_insecure_http: boolean;
         api_key_env: string | null;
         reasoning_effort: string | null;
         extra_headers: Record<string, string> | null;
@@ -215,6 +218,7 @@ function NewChatForm({
           backend: record.backend as BackendKind,
           model: record.model,
           base_url: record.base_url,
+          allow_insecure_http: record.allow_insecure_http ?? false,
           api_key_env: record.api_key_env ?? null,
           reasoning_effort: record.reasoning_effort ?? null,
           extra_headers: record.extra_headers,
@@ -235,6 +239,7 @@ function NewChatForm({
         backend: selected.backend,
         model: selected.model,
         base_url: selected.base_url,
+        allow_insecure_http: selected.allow_insecure_http,
         api_key_env: selected.api_key_env,
         reasoning_effort: selected.reasoning_effort,
         extra_headers: selected.extra_headers,

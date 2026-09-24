@@ -99,7 +99,8 @@ async fn project_session_materializes_defaults_and_filters_membership() {
             name: "Project default".to_string(),
             backend: "openai-responses".to_string(),
             model: "gpt-5.2".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            base_url: "http://project-gateway.example/v1".to_string(),
+            allow_insecure_http: true,
             api_key_env: Some("OPENAI_API_KEY".to_string()),
             reasoning_effort: Some("high".to_string()),
             extra_headers: BTreeMap::from([("X-Project".to_string(), "selected".to_string())]),
@@ -148,6 +149,8 @@ async fn project_session_materializes_defaults_and_filters_membership() {
     assert_eq!(stored.project_id, Some(project.project_id.clone()));
     assert_eq!(stored.cwd, workspace.canonicalize().unwrap());
     assert_eq!(stored.model, "gpt-5.2");
+    assert_eq!(stored.base_url, "http://project-gateway.example/v1");
+    assert!(stored.allow_insecure_http);
     assert_eq!(stored.reasoning_effort, Some(ReasoningEffort::Low));
     assert_eq!(
         stored.extra_headers.get("X-Project").map(String::as_str),
@@ -239,6 +242,58 @@ async fn project_session_materializes_defaults_and_filters_membership() {
     let reloaded = sessions::load_session(&store_path, &session_id).unwrap();
     assert_eq!(reloaded.model, "gpt-5.2");
     assert_eq!(reloaded.project_id, Some(project.project_id));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn project_sibling_inherits_public_http_opt_in() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("project_sibling_http_policy");
+    let workspace = root.join("workspace");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("project-test-key"));
+    let manager = test_manager(&root);
+    let store_path = root.join("store.db");
+    let project = manager
+        .projects()
+        .create(application::projects::CreateProject {
+            name: Some("Sibling policy".to_string()),
+            description: None,
+            cwd: workspace,
+            ssh_host: None,
+            ssh_port: None,
+            ssh_identity_file: None,
+            default_model_config_id: None,
+        })
+        .await
+        .unwrap();
+
+    manager
+        .create_session(CreateSessionRequest {
+            project_id: Some(project.project_id.clone()),
+            model: RequestField::Value("custom-model".to_string()),
+            backend: RequestField::Value("openai-responses".to_string()),
+            base_url: RequestField::Value("http://sibling-gateway.example/v1".to_string()),
+            allow_insecure_http: RequestField::Value(true),
+            api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
+            ..CreateSessionRequest::default()
+        })
+        .await
+        .unwrap();
+    let inherited = manager
+        .create_session(CreateSessionRequest {
+            project_id: Some(project.project_id),
+            ..CreateSessionRequest::default()
+        })
+        .await
+        .expect("a later project chat should inherit its sibling's HTTP policy");
+    let stored =
+        sessions::load_session(&store_path, &inherited.metadata.session_id.unwrap()).unwrap();
+    assert_eq!(stored.base_url, "http://sibling-gateway.example/v1");
+    assert!(stored.allow_insecure_http);
 
     let _ = std::fs::remove_dir_all(root);
 }

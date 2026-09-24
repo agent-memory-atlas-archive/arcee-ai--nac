@@ -12,6 +12,7 @@ import {
   InputTrailing,
   type SelectItem,
   Separator,
+  Switch,
 } from "@/app/atoms";
 import { CatalogModelPicker } from "@/app/components/modals/CatalogModelPicker";
 import { ConfigRow, CONTROL_WIDTH } from "@/app/components/modals/ConfigRow";
@@ -56,6 +57,7 @@ export type LaunchModelSelection =
       backend: BackendKind;
       model: string;
       base_url: string;
+      allow_insecure_http: boolean;
       api_key_env: string | null;
       reasoning_effort: string | null;
       extra_headers: Record<string, string> | null;
@@ -84,6 +86,7 @@ export interface ConfigurationsPanelInitial {
   backend: BackendKind;
   model: string;
   base_url: string;
+  allow_insecure_http?: boolean;
   api_key_env: string | null;
   reasoning_effort: string | null;
   extra_headers: Record<string, string>;
@@ -157,6 +160,7 @@ export function ConfigurationsPanel({
   const [apiKey, setApiKey] = useState("");
   const [modelDraft, setModelDraft] = useState(initial?.model ?? "");
   const [baseUrlDraft, setBaseUrlDraft] = useState(initial?.base_url ?? "");
+  const [allowInsecureHttp, setAllowInsecureHttp] = useState(initial?.allow_insecure_http ?? false);
   const [defaultModel, setDefaultModel] = useState(initial?.model ?? "");
   const [filePath, setFilePath] = useState("");
   const [picking, setPicking] = useState(false);
@@ -211,6 +215,7 @@ export function ConfigurationsPanel({
           entry.backend === initial.backend &&
           entry.model === initial.model &&
           entry.base_url === initial.base_url &&
+          entry.allow_insecure_http === (initial.allow_insecure_http ?? false) &&
           entry.api_key_env === initial.api_key_env &&
           (entry.reasoning_effort ?? null) === initial.reasoning_effort &&
           stringMapsEqual(entry.extra_headers, initial.extra_headers),
@@ -381,6 +386,7 @@ export function ConfigurationsPanel({
     source.kind === "new" &&
     backend === initial.backend &&
     baseUrlDraft.trim() === initial.base_url &&
+    allowInsecureHttp === (initial.allow_insecure_http ?? false) &&
     !apiKey.trim(),
   );
 
@@ -394,6 +400,7 @@ export function ConfigurationsPanel({
         backend: initial.backend,
         model,
         base_url: initial.base_url,
+        allow_insecure_http: initial.allow_insecure_http ?? false,
         api_key_env: initial.api_key_env,
         reasoning_effort: initial.reasoning_effort,
         extra_headers: initial.extra_headers,
@@ -414,6 +421,7 @@ export function ConfigurationsPanel({
           backend: catalogPick.backend,
           model: catalogPick.model,
           base_url: catalogPick.baseUrl,
+          allow_insecure_http: false,
           api_key_env: needsKey ? (catalogProvider?.connection?.api_key_env ?? null) : null,
           reasoning_effort: null,
           extra_headers: null,
@@ -432,6 +440,7 @@ export function ConfigurationsPanel({
           backend: catalogPick.backend,
           model: catalogPick.model,
           base_url: validatedBaseUrl || catalogPick.baseUrl,
+          allow_insecure_http: false,
           api_key: apiKey.trim(),
         },
       };
@@ -454,6 +463,7 @@ export function ConfigurationsPanel({
             backend,
             model,
             base_url: url,
+            allow_insecure_http: allowInsecureHttp,
             api_key: needsKey ? key : null,
           },
         };
@@ -475,6 +485,7 @@ export function ConfigurationsPanel({
           backend,
           model: chosenModel,
           base_url: validatedBaseUrl,
+          allow_insecure_http: false,
           api_key: key,
         },
       };
@@ -489,6 +500,7 @@ export function ConfigurationsPanel({
       backend: savedBackend,
       model,
       base_url: url,
+      allow_insecure_http: resolved.allow_insecure_http,
       api_key_env: resolved.api_key_env,
       reasoning_effort: resolved.reasoning_effort,
       extra_headers: savedRecord?.extra_headers ?? null,
@@ -524,6 +536,7 @@ export function ConfigurationsPanel({
     provider,
     backend,
     baseUrlDraft,
+    allowInsecureHttp,
     modelDraft,
     signedIn,
     keyValidated,
@@ -902,6 +915,23 @@ export function ConfigurationsPanel({
                         value={baseUrlDraft}
                         onChange={(event) => setBaseUrlDraft(event.target.value)}
                       />
+                    }
+                  />
+                  <Separator />
+                  <ConfigRow
+                    label="Allow insecure HTTP"
+                    control={
+                      <div className={`${CONTROL_WIDTH} flex flex-col items-start gap-1`}>
+                        <Switch
+                          aria-label="Allow insecure HTTP"
+                          checked={allowInsecureHttp}
+                          onChange={setAllowInsecureHttp}
+                        />
+                        <p className="body-small text-basic-secondary">
+                          Your API key, prompts, source code, tool output, and model responses may
+                          be read or modified in transit.
+                        </p>
+                      </div>
                     }
                   />
                 </>

@@ -1,4 +1,6 @@
 use super::*;
+#[path = "schema/http_policy_tests.rs"]
+mod http_policy_tests;
 
 fn temp_store_path(label: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
@@ -168,6 +170,7 @@ fn assert_current_schema(conn: &Connection) {
         "permission_approval_mode",
         "permission_auto_approve_generation",
         "permission_approval_revision",
+        "allow_insecure_http",
         "orchestrator_compaction_threshold",
         "visible_message_count",
         "last_user_prompt",
@@ -506,7 +509,7 @@ fn v16_store_adds_orchestrator_behavior_and_establishes_downgrade_barrier() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(version, STORE_SCHEMA_VERSION);
-    assert_eq!(STORE_SCHEMA_VERSION, 28);
+    assert_eq!(STORE_SCHEMA_VERSION, 29);
     drop(migrated);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

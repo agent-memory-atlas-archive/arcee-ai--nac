@@ -377,6 +377,39 @@ fn custom_api_key_endpoints_accept_public_https_without_weakening_url_hygiene() 
 }
 
 #[test]
+fn public_http_requires_explicit_opt_in_without_weakening_other_url_hygiene() {
+    let public = "http://gateway.example/v1";
+    assert!(
+        resolve_model_base_url(BackendKind::OpenAiChatCompletions, Some(public.into()))
+            .unwrap_err()
+            .to_string()
+            .contains("requires HTTPS")
+    );
+    assert_eq!(
+        resolve_model_base_url_with_policy(
+            BackendKind::OpenAiChatCompletions,
+            Some(public.into()),
+            true,
+        )
+        .unwrap(),
+        public
+    );
+
+    for rejected in [
+        "ftp://gateway.example/v1",
+        "http://user:secret@gateway.example/v1",
+        "relative/path",
+    ] {
+        assert!(resolve_model_base_url_with_policy(
+            BackendKind::OpenAiChatCompletions,
+            Some(rejected.into()),
+            true,
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn effective_settings_reject_unsupported_reasoning_before_client_or_persistence() {
     let all = [
         ReasoningEffort::None,

@@ -227,6 +227,7 @@ pub struct ModelClient {
     api_key_env: Option<String>,
     trusted_api_key_file: Option<std::path::PathBuf>,
     extra_headers: std::collections::BTreeMap<String, String>,
+    allow_insecure_http: bool,
     arcee_credential_source: Option<ArceeCredentialSource>,
     /// Anthropic prompt-cache TTL. `None` = default 5-minute TTL (workers);
     /// `Some("1h")` = 1-hour TTL with beta header (orchestrator).
@@ -300,6 +301,7 @@ impl ModelClient {
             api_key_env: settings.api_key_env,
             trusted_api_key_file: settings.trusted_api_key_file,
             extra_headers: settings.extra_headers,
+            allow_insecure_http: settings.allow_insecure_http,
             arcee_credential_source,
             cache_ttl: None,
             prompt_cache_key: None,
@@ -441,6 +443,10 @@ impl ModelClient {
 
     pub fn extra_headers(&self) -> &std::collections::BTreeMap<String, String> {
         &self.extra_headers
+    }
+
+    pub fn allow_insecure_http(&self) -> bool {
+        self.allow_insecure_http
     }
 
     /// Attach per-response cost computed from the resolved catalog metadata
@@ -1129,6 +1135,7 @@ impl ModelClient {
             api_key_env: None,
             trusted_api_key_file: None,
             extra_headers: std::collections::BTreeMap::new(),
+            allow_insecure_http: false,
             arcee_credential_source: None,
             cache_ttl: None,
             prompt_cache_key: None,

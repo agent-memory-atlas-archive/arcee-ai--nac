@@ -17,6 +17,7 @@ use crate::{
 pub(crate) struct SessionConfigPatch {
     pub(crate) model: Field<String>,
     pub(crate) base_url: Field<String>,
+    pub(crate) allow_insecure_http: Field<bool>,
     pub(crate) backend: Field<String>,
     pub(crate) reasoning_effort: Field<String>,
     pub(crate) api_key_env: Field<String>,
@@ -29,6 +30,7 @@ impl SessionConfigPatch {
     fn is_empty(&self) -> bool {
         matches!(self.model, Field::Unchanged)
             && matches!(self.base_url, Field::Unchanged)
+            && matches!(self.allow_insecure_http, Field::Unchanged)
             && matches!(self.backend, Field::Unchanged)
             && matches!(self.reasoning_effort, Field::Unchanged)
             && matches!(self.api_key_env, Field::Unchanged)
@@ -146,17 +148,22 @@ impl<'a> SessionConfigurationApplication<'a> {
                     name: prospective.api_key_env.as_deref(),
                     previous: current.api_key_env.as_deref(),
                 });
-                prospective.light_model = Some(light_model::normalize(light, inherited)?);
+                prospective.light_model = Some(light_model::normalize_with_http_policy(
+                    light,
+                    inherited,
+                    prospective.allow_insecure_http,
+                )?);
             }
         }
 
-        let _settings = EffectiveModelSettings::new(
+        let _settings = EffectiveModelSettings::new_with_http_policy(
             backend,
             prospective.model.clone(),
             prospective.base_url.clone(),
             reasoning_effort,
             prospective.api_key_env.clone(),
             extra_headers.clone(),
+            prospective.allow_insecure_http,
         )?;
         let mounted_override = self.manager.managed_model().filter(|profile| {
             profile.matches_settings_override(
@@ -177,15 +184,20 @@ impl<'a> SessionConfigurationApplication<'a> {
         if behavior != sessions::SessionBehavior::Direct {
             if let Some(light) = prospective.light_model.as_ref() {
                 if let Some(trusted) = trusted_light.as_ref() {
-                    nac_core::light_model::validate_with_trusted_credential(
+                    nac_core::light_model::validate_with_trusted_credential_and_http_policy(
                         light,
                         &extra_headers,
                         trusted,
+                        prospective.allow_insecure_http,
                     )
                     .map_err(request_configuration_error_from)?;
                 } else {
-                    nac_core::light_model::validate(light, &extra_headers)
-                        .map_err(request_configuration_error_from)?;
+                    nac_core::light_model::validate_with_http_policy(
+                        light,
+                        &extra_headers,
+                        prospective.allow_insecure_http,
+                    )
+                    .map_err(request_configuration_error_from)?;
                 }
             }
         }
@@ -237,6 +249,11 @@ fn apply_patch(config: &mut sessions::RawSessionConfig, request: SessionConfigPa
             ));
         }
         Field::Set(value) => config.base_url = nonblank_request_string(value, "base_url")?,
+    }
+    match request.allow_insecure_http {
+        Field::Unchanged => {}
+        Field::Clear => config.allow_insecure_http = false,
+        Field::Set(value) => config.allow_insecure_http = value,
     }
     match request.backend {
         Field::Unchanged => {}

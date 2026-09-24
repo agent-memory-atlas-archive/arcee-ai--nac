@@ -561,6 +561,7 @@ async fn stale_manager_rebuilds_all_model_authority_after_external_patch() {
             UpdateConfigRequest {
                 model: RequestField::Value("model-from-other-manager".to_string()),
                 base_url: RequestField::Value(new_base_url.clone()),
+                allow_insecure_http: RequestField::Omitted,
                 backend: RequestField::Value("openai-responses".to_string()),
                 reasoning_effort: RequestField::Value("high".to_string()),
                 api_key_env: RequestField::Value("SECOND_API_KEY".to_string()),

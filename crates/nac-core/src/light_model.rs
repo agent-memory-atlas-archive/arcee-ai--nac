@@ -90,10 +90,11 @@ impl std::error::Error for LightModelError {
 /// Resolve the light model at launch or resume, so invalid settings fail
 /// before the first dispatch. The client carries the session's extra
 /// headers, matching how single-mode workers inherit them.
-pub(crate) fn resolve_light_client(
+pub(crate) fn resolve_light_client_with_http_policy(
     light: &LightModelSettings,
     session_headers: &BTreeMap<String, String>,
     trusted: Option<&TrustedLightCredential>,
+    allow_insecure_http: bool,
 ) -> std::result::Result<ModelClient, LightModelError> {
     // Preserve the caller's explicit selector intent before effective-model
     // resolution can auto-select a conventional environment variable. An
@@ -108,13 +109,14 @@ pub(crate) fn resolve_light_client(
         .and_then(managed_backend_base_url)
         .map(str::to_string);
     let base_url = light.base_url.clone().or(selected_managed_base_url);
-    EffectiveModelSettings::from_optional(
+    EffectiveModelSettings::from_optional_with_http_policy(
         backend,
         Some(light.model.clone()),
         base_url,
         light.reasoning_effort,
         light.api_key_env.clone(),
         session_headers.clone(),
+        allow_insecure_http,
     )
     .and_then(|mut settings| {
         let trusted_file = trusted.and_then(|credential| {
@@ -145,13 +147,30 @@ pub(crate) fn resolve_light_client(
     })
 }
 
+#[cfg(test)]
+fn resolve_light_client(
+    light: &LightModelSettings,
+    session_headers: &BTreeMap<String, String>,
+    trusted: Option<&TrustedLightCredential>,
+) -> std::result::Result<ModelClient, LightModelError> {
+    resolve_light_client_with_http_policy(light, session_headers, trusted, false)
+}
+
 /// Validate a light-model configuration through the same resolution path
 /// used by launch and resume.
 pub fn validate(
     light: &LightModelSettings,
     session_headers: &BTreeMap<String, String>,
 ) -> Result<()> {
-    resolve_light_client(light, session_headers, None)
+    validate_with_http_policy(light, session_headers, false)
+}
+
+pub fn validate_with_http_policy(
+    light: &LightModelSettings,
+    session_headers: &BTreeMap<String, String>,
+    allow_insecure_http: bool,
+) -> Result<()> {
+    resolve_light_client_with_http_policy(light, session_headers, None, allow_insecure_http)
         .map(|_| ())
         .map_err(anyhow::Error::from)
 }
@@ -163,9 +182,23 @@ pub fn validate_with_trusted_credential(
     session_headers: &BTreeMap<String, String>,
     trusted: &TrustedLightCredential,
 ) -> Result<()> {
-    resolve_light_client(light, session_headers, Some(trusted))
-        .map(|_| ())
-        .map_err(anyhow::Error::from)
+    validate_with_trusted_credential_and_http_policy(light, session_headers, trusted, false)
+}
+
+pub fn validate_with_trusted_credential_and_http_policy(
+    light: &LightModelSettings,
+    session_headers: &BTreeMap<String, String>,
+    trusted: &TrustedLightCredential,
+    allow_insecure_http: bool,
+) -> Result<()> {
+    resolve_light_client_with_http_policy(
+        light,
+        session_headers,
+        Some(trusted),
+        allow_insecure_http,
+    )
+    .map(|_| ())
+    .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]

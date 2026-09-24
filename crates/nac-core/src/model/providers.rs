@@ -156,6 +156,15 @@ pub async fn list_provider_models(
     base_url: &str,
     api_key: &str,
 ) -> Result<Vec<ProviderModel>> {
+    list_provider_models_with_http_policy(backend, base_url, api_key, false).await
+}
+
+pub async fn list_provider_models_with_http_policy(
+    backend: BackendKind,
+    base_url: &str,
+    api_key: &str,
+    allow_insecure_http: bool,
+) -> Result<Vec<ProviderModel>> {
     // A backend that signs in through a browser has a model index, but it is
     // read with the stored login; a key offered for one is a caller mistake and
     // must not be forwarded.
@@ -165,7 +174,11 @@ pub async fn list_provider_models(
         ));
     }
 
-    let base_url = resolve_model_base_url(backend, Some(base_url.to_string()))?;
+    let base_url = resolve_model_base_url_with_policy(
+        backend,
+        Some(base_url.to_string()),
+        allow_insecure_http,
+    )?;
     let url = model_index_url(backend, &base_url)?;
 
     let request = model_index_request(&url)?;

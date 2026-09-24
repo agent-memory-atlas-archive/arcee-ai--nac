@@ -79,6 +79,122 @@ async fn custom_public_https_endpoints_persist_for_primary_and_light_models() {
 }
 
 #[tokio::test]
+async fn public_http_requires_opt_in_and_survives_update_and_resume() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("custom_public_http_opt_in");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("server-test-key"));
+    let manager = test_manager(&root);
+    let store_path = root.join("store.db");
+    let primary_url = "http://gateway.example/v1";
+    let light_url = "http://light.example/v1";
+
+    let request = CreateSessionRequest {
+        model: RequestField::Value("custom-primary-model".to_string()),
+        base_url: RequestField::Value(primary_url.to_string()),
+        backend: RequestField::Value("openai-responses".to_string()),
+        api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
+        light_model: RequestField::Value(LightModelSettings {
+            model: "custom-light-model".to_string(),
+            backend: Some(BackendKind::OpenAiResponses),
+            base_url: Some(light_url.to_string()),
+            api_key_env: None,
+            reasoning_effort: None,
+        }),
+        ..CreateSessionRequest::default()
+    };
+    let denied = manager.create_session(request.clone()).await.unwrap_err();
+    assert!(denied.to_string().contains("requires HTTPS"), "{denied:#}");
+    assert!(
+        !store_path.exists(),
+        "rejected launch must not create the store"
+    );
+
+    let created = manager
+        .create_session(CreateSessionRequest {
+            allow_insecure_http: RequestField::Value(true),
+            ..request
+        })
+        .await
+        .expect("the explicit opt-in should admit public HTTP for both models");
+    let session_id = created.metadata.session_id.unwrap();
+    let stored = sessions::load_session(&store_path, &session_id).unwrap();
+    assert!(stored.allow_insecure_http);
+    assert_eq!(stored.base_url, primary_url);
+    assert_eq!(
+        stored
+            .light_model
+            .as_ref()
+            .and_then(|light| light.base_url.as_deref()),
+        Some(light_url)
+    );
+
+    manager
+        .inner
+        .active_sessions
+        .write()
+        .await
+        .remove(&session_id);
+    manager
+        .attach_session(&session_id)
+        .await
+        .expect("resume must rebuild both clients with the persisted opt-in");
+    manager
+        .inner
+        .active_sessions
+        .write()
+        .await
+        .remove(&session_id);
+
+    let denied_update = manager
+        .update_session_config(
+            &session_id,
+            UpdateConfigRequest {
+                allow_insecure_http: RequestField::Value(false),
+                ..UpdateConfigRequest::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        denied_update.to_string().contains("requires HTTPS"),
+        "{denied_update:#}"
+    );
+    assert!(
+        sessions::load_session(&store_path, &session_id)
+            .unwrap()
+            .allow_insecure_http
+    );
+
+    manager
+        .update_session_config(
+            &session_id,
+            UpdateConfigRequest {
+                base_url: RequestField::Value("https://gateway.example/v1".to_string()),
+                light_model: RequestField::Value(LightModelSettings {
+                    model: "custom-light-model".to_string(),
+                    backend: Some(BackendKind::OpenAiResponses),
+                    base_url: Some("https://light.example/v1".to_string()),
+                    api_key_env: None,
+                    reasoning_effort: None,
+                }),
+                allow_insecure_http: RequestField::Value(false),
+                ..UpdateConfigRequest::default()
+            },
+        )
+        .await
+        .expect("switching every public endpoint to HTTPS should allow disabling the opt-in");
+    assert!(
+        !sessions::load_session(&store_path, &session_id)
+            .unwrap()
+            .allow_insecure_http
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn create_inherits_overrides_and_null_clears_optional_config() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("create_tristate");
@@ -1159,6 +1275,7 @@ async fn patch_round_trips_every_state_and_rebuilds_from_persisted_settings() {
             UpdateConfigRequest {
                 model: RequestField::Value(" replacement-model ".to_string()),
                 base_url: RequestField::Value(" https://api.openai.com/v1 ".to_string()),
+                allow_insecure_http: RequestField::Omitted,
                 backend: RequestField::Value("openai-responses".to_string()),
                 reasoning_effort: RequestField::Value("high".to_string()),
                 api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
@@ -1447,6 +1564,7 @@ async fn removed_backend_updates_are_bad_requests_and_are_not_persisted() {
                 UpdateConfigRequest {
                     model: RequestField::Omitted,
                     base_url: RequestField::Value("https://api.arcee.ai".to_string()),
+                    allow_insecure_http: RequestField::Omitted,
                     backend: RequestField::Value(backend.to_string()),
                     reasoning_effort: RequestField::Omitted,
                     api_key_env: RequestField::Omitted,
@@ -1492,6 +1610,7 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
             cwd: None,
             model: RequestField::Omitted,
             base_url: RequestField::Value("http://api.arcee.ai/insecure".to_string()),
+            allow_insecure_http: RequestField::Omitted,
             backend: RequestField::Value("arcee-auth".to_string()),
             reasoning_effort: RequestField::Omitted,
             api_key_env: RequestField::Omitted,
@@ -1545,6 +1664,7 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
                 UpdateConfigRequest {
                     model: RequestField::Omitted,
                     base_url: RequestField::Value(invalid_base_url.to_string()),
+                    allow_insecure_http: RequestField::Omitted,
                     backend: RequestField::Value("arcee-auth".to_string()),
                     reasoning_effort: RequestField::Omitted,
                     api_key_env: RequestField::Omitted,
@@ -1574,6 +1694,7 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
             UpdateConfigRequest {
                 model: RequestField::Value("trinity-large-thinking".to_string()),
                 base_url: RequestField::Value("https://tenant.arcee.ai/api/v1".to_string()),
+                allow_insecure_http: RequestField::Omitted,
                 backend: RequestField::Value("arcee-auth".to_string()),
                 reasoning_effort: RequestField::Omitted,
                 api_key_env: RequestField::Omitted,
@@ -1595,6 +1716,7 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
             UpdateConfigRequest {
                 model: RequestField::Value("trinity-large-thinking".to_string()),
                 base_url: RequestField::Value("https://api.arcee.ai/api".to_string()),
+                allow_insecure_http: RequestField::Omitted,
                 backend: RequestField::Value("arcee-api".to_string()),
                 reasoning_effort: RequestField::Omitted,
                 api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
@@ -1617,6 +1739,7 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
             cwd: None,
             model: RequestField::Value("test-model".to_string()),
             base_url: RequestField::Value("https://tenant.arcee.ai/api/v1".to_string()),
+            allow_insecure_http: RequestField::Omitted,
             backend: RequestField::Value("arcee-api".to_string()),
             reasoning_effort: RequestField::Omitted,
             api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
@@ -1664,6 +1787,7 @@ async fn null_update_clears_legacy_arcee_api_key_env() {
             UpdateConfigRequest {
                 model: RequestField::Value("trinity-large-thinking".to_string()),
                 base_url: RequestField::Omitted,
+                allow_insecure_http: RequestField::Omitted,
                 backend: RequestField::Omitted,
                 reasoning_effort: RequestField::Omitted,
                 api_key_env: RequestField::Null,

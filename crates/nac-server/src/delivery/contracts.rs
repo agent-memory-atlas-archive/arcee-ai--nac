@@ -256,6 +256,9 @@ pub struct CreateSessionRequest {
     pub model: RequestField<String>,
     #[serde(default)]
     pub base_url: RequestField<String>,
+    /// Explicitly permit public plaintext HTTP for this session's primary and light endpoints.
+    #[serde(default)]
+    pub allow_insecure_http: RequestField<bool>,
     #[serde(default)]
     pub backend: RequestField<String>,
     #[serde(default)]
@@ -323,6 +326,7 @@ impl CreateSessionRequest {
             cwd: self.cwd,
             model: application_field(self.model),
             base_url: application_field(self.base_url),
+            allow_insecure_http: application_field(self.allow_insecure_http),
             backend: application_field(self.backend),
             reasoning_effort: application_field(self.reasoning_effort),
             api_key_env: application_field(self.api_key_env),
@@ -375,6 +379,10 @@ pub struct ProviderModelsRequest {
     pub api_key_env: Option<String>,
     /// Overrides the provider's canonical URL, for a proxy or a custom gateway.
     pub base_url: Option<String>,
+    /// Explicitly permit public plaintext HTTP during provider discovery.
+    #[serde(default)]
+    #[schema(default = false)]
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -391,6 +399,9 @@ pub struct UpdateConfigRequest {
     pub model: RequestField<String>,
     #[serde(default)]
     pub base_url: RequestField<String>,
+    /// Omitted preserves the session value; null disables the opt-in.
+    #[serde(default)]
+    pub allow_insecure_http: RequestField<bool>,
     #[serde(default)]
     pub backend: RequestField<String>,
     #[serde(default)]
@@ -413,6 +424,7 @@ impl UpdateConfigRequest {
         application::session_configuration::SessionConfigPatch {
             model: application_field(self.model),
             base_url: application_field(self.base_url),
+            allow_insecure_http: application_field(self.allow_insecure_http),
             backend: application_field(self.backend),
             reasoning_effort: application_field(self.reasoning_effort),
             api_key_env: application_field(self.api_key_env),

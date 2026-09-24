@@ -106,6 +106,7 @@ function initialFromMetadata(meta: SessionMetadata): SettingsInitialValues {
     model: meta.model,
     backend: meta.backend,
     base_url: meta.base_url ?? "",
+    allow_insecure_http: false,
     reasoning_effort: meta.reasoning_effort || null,
     api_key_env: meta.api_key_env || null,
     extra_headers: meta.extra_headers ?? {},
@@ -121,6 +122,7 @@ function initialFromConfig(config: RawSessionConfig): SettingsInitialValues {
     model: config.model,
     backend: config.backend ?? "",
     base_url: config.base_url,
+    allow_insecure_http: config.allow_insecure_http ?? false,
     reasoning_effort: config.reasoning_effort || null,
     api_key_env: config.api_key_env || null,
     extra_headers: headers.headers,
@@ -415,6 +417,7 @@ function SettingsForm({
       backend: BackendKind;
       model: string;
       base_url: string;
+      allow_insecure_http: boolean;
       api_key_env: string | null;
     }
     let selected: SelectedModelConfig;
@@ -429,6 +432,7 @@ function SettingsForm({
           backend: record.backend as BackendKind,
           model: record.model,
           base_url: record.base_url,
+          allow_insecure_http: record.allow_insecure_http ?? false,
           api_key_env: record.api_key_env ?? null,
         };
       } else {
@@ -454,6 +458,7 @@ function SettingsForm({
           model: selected.model,
           backend: selected.backend,
           base_url: selected.base_url,
+          allow_insecure_http: selected.allow_insecure_http,
           reasoning_effort: reasoning,
           credential_mode: selected.api_key_env ? "variable" : "none",
           api_key_env: selected.api_key_env ?? "",
@@ -607,6 +612,7 @@ function SettingsForm({
             backend: initial.backend as BackendKind,
             model: initial.model,
             base_url: initial.base_url,
+            allow_insecure_http: initial.allow_insecure_http,
             api_key_env: initial.api_key_env,
             reasoning_effort: initial.reasoning_effort,
             extra_headers: initial.extra_headers,

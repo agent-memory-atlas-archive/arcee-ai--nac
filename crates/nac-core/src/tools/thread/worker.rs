@@ -183,6 +183,10 @@ fn append_worker_model_arguments(command: &mut Command, client: &ModelClient) {
         .arg("--backend")
         .arg(client.backend().as_str());
 
+    if client.allow_insecure_http() {
+        command.arg("--allow-insecure-http");
+    }
+
     if let Some(reasoning_effort) = client.reasoning_effort() {
         command.arg("--effort").arg(reasoning_effort.as_str());
     }
@@ -1598,6 +1602,35 @@ exit 0
             ]
         );
         assert!(!args.iter().any(|arg| arg == "--effort"));
+
+        match original {
+            Some(value) => unsafe { std::env::set_var(key_name, value) },
+            None => unsafe { std::env::remove_var(key_name) },
+        }
+    }
+
+    #[test]
+    fn worker_model_transport_preserves_insecure_http_opt_in() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let key_name = "NAC_WORKER_INSECURE_HTTP_TEST_KEY";
+        let original = std::env::var_os(key_name);
+        unsafe { std::env::set_var(key_name, "test-key") };
+        let client = ModelClient::from_effective_settings(
+            EffectiveModelSettings::new_with_http_policy(
+                BackendKind::OpenAiChatCompletions,
+                "vllm-model".to_string(),
+                "http://public.example/v1".to_string(),
+                None,
+                Some(key_name.to_string()),
+                BTreeMap::new(),
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let args = worker_model_arguments_for_test(&client);
+        assert!(args.iter().any(|arg| arg == "--allow-insecure-http"));
 
         match original {
             Some(value) => unsafe { std::env::set_var(key_name, value) },

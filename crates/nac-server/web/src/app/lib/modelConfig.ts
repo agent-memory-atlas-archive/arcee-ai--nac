@@ -196,6 +196,7 @@ export function launchLocationFromValues(values: {
 export interface ModelFormValues {
   model: string;
   base_url: string;
+  allow_insecure_http: boolean;
   backend: string;
   reasoning_effort: string;
   credential_mode: CredentialMode;
@@ -207,6 +208,7 @@ export interface ModelFormValues {
 export interface SettingsInitialValues {
   model: string;
   base_url: string;
+  allow_insecure_http: boolean;
   backend: string;
   reasoning_effort: string | null;
   api_key_env: string | null;
@@ -248,6 +250,7 @@ export function buildSettingsPatch(
   const current = {
     model: requiredSettingsString(values.model, "Model"),
     base_url: baseUrl,
+    allow_insecure_http: values.allow_insecure_http,
     backend,
     reasoning_effort:
       values.reasoning_effort === CLEAR_EFFORT ? null : values.reasoning_effort || null,
@@ -255,15 +258,16 @@ export function buildSettingsPatch(
   };
 
   const patch: UpdateConfigRequest = {};
-  for (const field of [
-    "model",
-    "base_url",
-    "backend",
-    "reasoning_effort",
-    "api_key_env",
-  ] as const) {
-    if (current[field] !== initial[field]) patch[field] = current[field];
+  if (current.model !== initial.model) patch.model = current.model;
+  if (current.base_url !== initial.base_url) patch.base_url = current.base_url;
+  if (current.allow_insecure_http !== initial.allow_insecure_http) {
+    patch.allow_insecure_http = current.allow_insecure_http;
   }
+  if (current.backend !== initial.backend) patch.backend = current.backend;
+  if (current.reasoning_effort !== initial.reasoning_effort) {
+    patch.reasoning_effort = current.reasoning_effort;
+  }
+  if (current.api_key_env !== initial.api_key_env) patch.api_key_env = current.api_key_env;
 
   const headers = serializeExtraHeaders(values.extra_headers, {});
   if (initial.extra_headers_invalid || !sameHeaderObject(headers, initial.extra_headers)) {

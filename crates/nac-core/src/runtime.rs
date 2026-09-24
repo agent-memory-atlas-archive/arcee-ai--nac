@@ -10,7 +10,8 @@ use crate::agent::{Agent, AgentConfig, AgentMode};
 use crate::agents_md::AgentsMdBundle;
 use crate::events::{AgentEvent, EventSink};
 use crate::light_model::{
-    resolve_light_client, LightModelError, LightModelSettings, TrustedLightCredential,
+    resolve_light_client_with_http_policy, LightModelError, LightModelSettings,
+    TrustedLightCredential,
 };
 use crate::mcp::{McpRegistry, McpRootPolicy, McpTransportPolicy};
 use crate::model::{

@@ -67,6 +67,10 @@ fn apply_project_model_defaults(
 ) {
     inherit_project_field(&mut request.model, Field::Set(defaults.model));
     inherit_project_field(&mut request.base_url, Field::Set(defaults.base_url));
+    inherit_project_field(
+        &mut request.allow_insecure_http,
+        Field::Set(defaults.allow_insecure_http),
+    );
     inherit_project_field(&mut request.backend, Field::Set(defaults.backend));
     inherit_project_field(
         &mut request.reasoning_effort,
@@ -130,6 +134,10 @@ fn apply_sibling_model_defaults(
     inherit_project_field(&mut request.model, Field::Set(sibling.model));
     inherit_project_field(&mut request.base_url, Field::Set(sibling.base_url));
     inherit_project_field(
+        &mut request.allow_insecure_http,
+        Field::Set(sibling.allow_insecure_http),
+    );
+    inherit_project_field(
         &mut request.backend,
         Field::Set(sibling.backend.as_str().to_string()),
     );
@@ -170,6 +178,7 @@ pub(crate) struct SessionCreationCommand {
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) model: Field<String>,
     pub(crate) base_url: Field<String>,
+    pub(crate) allow_insecure_http: Field<bool>,
     pub(crate) backend: Field<String>,
     pub(crate) reasoning_effort: Field<String>,
     pub(crate) api_key_env: Field<String>,
@@ -311,6 +320,7 @@ impl<'a> SessionCreationApplication<'a> {
             request.reasoning_effort,
             request.api_key_env,
             request.extra_headers,
+            request.allow_insecure_http,
         )?;
         if let Some(profile) = self.manager.managed_model() {
             model.trusted_light_credential = profile.trusted_light_credential();
@@ -346,7 +356,11 @@ impl<'a> SessionCreationApplication<'a> {
                         previous: None,
                     })
                 });
-                Some(light_model::normalize(light, inherited)?)
+                Some(light_model::normalize_with_http_policy(
+                    light,
+                    inherited,
+                    model.allow_insecure_http,
+                )?)
             }
         };
         let mut run_config = runtime::build_run_config_for_project_with_behavior(

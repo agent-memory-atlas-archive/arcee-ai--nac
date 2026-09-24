@@ -23,6 +23,7 @@ vi.mock("@/app/components/modals/ConfigurationsPanel", () => {
     backend: "openai-responses",
     model: "gpt-5.2",
     base_url: "https://api.openai.com/v1",
+    allow_insecure_http: false,
     api_key_env: "OPENAI_API_KEY",
     reasoning_effort: "high",
     extra_headers: { "X-Preset": "yes" },

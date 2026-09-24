@@ -348,7 +348,11 @@ async fn openapi_document_matches_the_running_api_router() {
 
 #[tokio::test]
 async fn openapi_special_wire_schemas_and_docs_are_live() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("openapi_special_schemas");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, None);
     let app = router(test_manager(&root));
     let response = app
         .clone()
@@ -401,6 +405,22 @@ async fn openapi_special_wire_schemas_and_docs_are_live() {
     assert_eq!(headers.len(), 2);
     assert!(headers.iter().any(|schema| schema["type"] == "object"));
     assert!(headers.iter().any(|schema| schema["type"] == "string"));
+    for schema in [
+        "CreateSessionRequest",
+        "UpdateConfigRequest",
+        "CreateModelConfigurationRequest",
+        "UpdateModelConfigurationRequest",
+        "ProviderModelsRequest",
+        "ModelConfigurationRecord",
+        "ResolvedModelConfiguration",
+    ] {
+        assert!(
+            document["components"]["schemas"][schema]["properties"]
+                .get("allow_insecure_http")
+                .is_some(),
+            "{schema} must expose allow_insecure_http"
+        );
+    }
     let model_headers_ref = document["components"]["schemas"]["UpdateModelConfigurationRequest"]
         ["properties"]["extra_headers"]["$ref"]
         .as_str()
@@ -636,6 +656,7 @@ fn model_request_fields_distinguish_omitted_null_and_values() {
         r#"{
                 "model":" model-a ",
                 "base_url":null,
+                "allow_insecure_http":true,
                 "backend":"openai-responses",
                 "reasoning_effort":"xhigh",
                 "api_key_env":null,
@@ -647,6 +668,7 @@ fn model_request_fields_distinguish_omitted_null_and_values() {
 
     assert_eq!(request.model, RequestField::Value(" model-a ".to_string()));
     assert_eq!(request.base_url, RequestField::Null);
+    assert_eq!(request.allow_insecure_http, RequestField::Value(true));
     assert_eq!(
         request.backend,
         RequestField::Value("openai-responses".to_string())
@@ -679,6 +701,7 @@ fn create_resolution_inherits_overrides_and_explicitly_clears_optional_config() 
         Field::Unchanged,
         Field::Unchanged,
         Field::Unchanged,
+        Field::Unchanged,
     )
     .unwrap();
     assert_eq!(inherited.reasoning_effort, OptionalModelOption::Inherit);
@@ -692,6 +715,7 @@ fn create_resolution_inherits_overrides_and_explicitly_clears_optional_config() 
         Field::Set("xhigh".to_string()),
         Field::Clear,
         Field::Clear,
+        Field::Set(true),
     )
     .unwrap();
     assert_eq!(explicit.api_model.as_deref(), Some("model-a"));
@@ -706,6 +730,7 @@ fn create_resolution_inherits_overrides_and_explicitly_clears_optional_config() 
     );
     assert_eq!(explicit.api_key_env, OptionalModelOption::Clear);
     assert_eq!(explicit.extra_headers, Some(BTreeMap::new()));
+    assert!(explicit.allow_insecure_http);
 
     let raw_selector = " SELECTED_KEY ";
     let selected = model_options(
@@ -714,6 +739,7 @@ fn create_resolution_inherits_overrides_and_explicitly_clears_optional_config() 
         Field::Unchanged,
         Field::Unchanged,
         Field::Set(raw_selector.to_string()),
+        Field::Unchanged,
         Field::Unchanged,
     )
     .unwrap();
@@ -736,6 +762,7 @@ fn null_required_and_blank_concrete_create_fields_are_bad_requests() {
             request.reasoning_effort,
             request.api_key_env,
             request.extra_headers,
+            request.allow_insecure_http,
         )
         .unwrap_err();
         assert!(error.downcast_ref::<RequestConfigurationError>().is_some());

@@ -66,6 +66,10 @@ struct CreateSessionParams {
     reasoning_effort: Option<String>,
     #[schemars(description = "Base URL for the model API endpoint")]
     base_url: Option<String>,
+    #[schemars(
+        description = "Explicitly allow public plaintext HTTP. This may expose the API key, prompts, source code, tool output, and model responses in transit."
+    )]
+    allow_insecure_http: Option<bool>,
     #[schemars(description = "Environment variable name for the API key")]
     api_key_env: Option<String>,
     #[schemars(description = "SSH host for remote sessions (e.g. \"user@host\")")]
@@ -166,6 +170,12 @@ struct UpdateSessionParams {
     session_id: String,
     #[schemars(description = "New model id")]
     model: Option<String>,
+    #[schemars(description = "New base URL for the model API endpoint")]
+    base_url: Option<String>,
+    #[schemars(
+        description = "Explicitly allow public plaintext HTTP. This may expose sensitive model traffic and the API key in transit."
+    )]
+    allow_insecure_http: Option<bool>,
     #[schemars(description = "New backend kind")]
     backend: Option<String>,
     #[schemars(description = "New reasoning effort")]
@@ -208,6 +218,10 @@ impl NacMcpService {
             cwd: params.cwd.map(std::path::PathBuf::from),
             model: field(params.model),
             base_url: field(params.base_url),
+            allow_insecure_http: params
+                .allow_insecure_http
+                .map(RequestField::Value)
+                .unwrap_or(RequestField::Omitted),
             backend: field(params.backend),
             reasoning_effort: field(params.reasoning_effort),
             api_key_env: field(params.api_key_env),
@@ -530,7 +544,11 @@ impl NacMcpService {
     ) -> Result<CallToolResult, ErrorData> {
         let request = UpdateConfigRequest {
             model: field(params.model),
-            base_url: RequestField::Omitted,
+            base_url: field(params.base_url),
+            allow_insecure_http: params
+                .allow_insecure_http
+                .map(RequestField::Value)
+                .unwrap_or(RequestField::Omitted),
             backend: field(params.backend),
             reasoning_effort: field(params.reasoning_effort),
             api_key_env: RequestField::Omitted,
