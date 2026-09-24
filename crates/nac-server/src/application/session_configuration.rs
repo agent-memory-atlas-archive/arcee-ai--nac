@@ -126,16 +126,22 @@ impl<'a> SessionConfigurationApplication<'a> {
         )?;
         match light_field {
             Field::Unchanged => {
-                // A key-only patch still moves an inherited light selector
-                // along to the normalized primary selector, including a clear
-                // when the primary switches to managed auth.
+                // Re-normalize the durable light selection under the
+                // prospective transport policy without resolving its
+                // credential. This also moves an inherited selector along to
+                // the normalized primary selector, including a clear when the
+                // primary switches to managed auth.
                 let inherited = light_model::InheritedCredential {
                     backend,
                     name: prospective.api_key_env.as_deref(),
                     previous: current.api_key_env.as_deref(),
                 };
-                if let Some(light) = prospective.light_model.as_mut() {
-                    light_model::rotate_inherited_credential(light, inherited);
+                if let Some(light) = prospective.light_model.take() {
+                    prospective.light_model = Some(light_model::normalize_with_http_policy(
+                        light,
+                        Some(inherited),
+                        prospective.allow_insecure_http,
+                    )?);
                 }
             }
             Field::Clear => prospective.light_model = None,

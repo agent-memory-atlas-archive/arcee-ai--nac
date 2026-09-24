@@ -195,6 +195,63 @@ async fn public_http_requires_opt_in_and_survives_update_and_resume() {
 }
 
 #[tokio::test]
+async fn direct_rejects_disabling_http_opt_in_with_unchanged_public_light_url() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("direct_public_light_http_opt_out");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("server-test-key"));
+    let manager = test_manager(&root);
+    let store_path = root.join("store.db");
+    let public_light_url = "http://light.example/v1";
+
+    let created = manager
+        .create_session(CreateSessionRequest {
+            behavior: sessions::SessionBehavior::Direct,
+            model: RequestField::Value("custom-primary-model".to_string()),
+            base_url: RequestField::Value("https://gateway.example/v1".to_string()),
+            backend: RequestField::Value("openai-responses".to_string()),
+            api_key_env: RequestField::Value("OPENAI_API_KEY".to_string()),
+            light_model: RequestField::Value(LightModelSettings {
+                model: "custom-light-model".to_string(),
+                backend: Some(BackendKind::OpenAiResponses),
+                base_url: Some(public_light_url.to_string()),
+                api_key_env: None,
+                reasoning_effort: None,
+            }),
+            allow_insecure_http: RequestField::Value(true),
+            ..CreateSessionRequest::default()
+        })
+        .await
+        .expect("the explicit opt-in should admit the unused public light endpoint");
+    let session_id = created.metadata.session_id.unwrap();
+
+    let error = manager
+        .update_session_config(
+            &session_id,
+            UpdateConfigRequest {
+                allow_insecure_http: RequestField::Value(false),
+                ..UpdateConfigRequest::default()
+            },
+        )
+        .await
+        .expect_err("disabling the opt-in must revalidate an unchanged light endpoint");
+    assert!(error.to_string().contains("requires HTTPS"), "{error:#}");
+
+    let stored = sessions::load_session(&store_path, &session_id).unwrap();
+    assert!(stored.allow_insecure_http);
+    assert_eq!(
+        stored
+            .light_model
+            .as_ref()
+            .and_then(|light| light.base_url.as_deref()),
+        Some(public_light_url)
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn create_inherits_overrides_and_null_clears_optional_config() {
     let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
     let root = temp_root("create_tristate");
