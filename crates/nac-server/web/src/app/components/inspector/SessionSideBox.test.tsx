@@ -27,8 +27,15 @@ vi.mock("@/app/components/inspector/DelegatedWorkView", () => ({
 vi.mock("@/app/components/inspector/HistoryView", () => ({
   HistoryView: () => <div>history</div>,
 }));
+vi.mock("@/app/components/inspector/RevisionPicker", () => ({
+  RevisionPicker: () => <div>revision</div>,
+}));
 vi.mock("@/app/components/inspector/ThreadsView", () => ({
-  ThreadsView: () => <div>threads</div>,
+  ThreadsView: ({ canSteerWorkers }: { canSteerWorkers: boolean }) => (
+    <div data-testid="threads" data-can-steer={String(canSteerWorkers)}>
+      threads
+    </div>
+  ),
 }));
 vi.mock("@/app/components/inspector/WorksetsView", () => ({
   WorksetsView: () => <div>worksets</div>,
@@ -88,5 +95,30 @@ describe("session side box collection integration", () => {
     expect(screen.getByRole("navigation", { name: "All sessions" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Hide panel" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Sessions" })).toBeNull();
+  });
+
+  it("grants worker steering only to a primary classic orchestrator", () => {
+    const classic = {
+      ...snapshot,
+      metadata: { ...snapshot.metadata, behavior: "orchestrator" },
+      lineage: null,
+    } as SessionSnapshotResponse;
+    const managed = {
+      ...classic,
+      lineage: { kind: "managed-orchestrator" },
+    } as unknown as SessionSnapshotResponse;
+    const props = {
+      sessionId: "session-a",
+      panel: "threads" as const,
+      onPanelChange: vi.fn(),
+      sessions: [],
+      projects: [],
+    };
+
+    const { rerender } = render(<SessionSideBox {...props} snapshot={classic} />);
+    expect(screen.getByTestId("threads").getAttribute("data-can-steer")).toBe("true");
+
+    rerender(<SessionSideBox {...props} snapshot={managed} />);
+    expect(screen.getByTestId("threads").getAttribute("data-can-steer")).toBe("false");
   });
 });
