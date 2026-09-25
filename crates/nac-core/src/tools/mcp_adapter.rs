@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -23,6 +24,18 @@ impl kernel::NativeTool for McpTool {
         // Imported tools do not declare concurrency semantics. Keep the
         // conservative direct-session scheduling behavior.
         kernel::ToolAdmission::Exclusive
+    }
+
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<kernel::ToolTimeout, ToolResult> {
+        Ok(kernel::ToolTimeout {
+            duration: requested.unwrap_or(kernel::DEFAULT_TOOL_TIMEOUT),
+            disposition: kernel::ToolTimeoutDisposition::Bounded,
+            remote_outcome_uncertain: true,
+        })
     }
 
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {

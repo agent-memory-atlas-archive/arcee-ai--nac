@@ -17,6 +17,116 @@ struct CountTool {
     name: &'static str,
 }
 
+struct CancellationAwarePendingTool {
+    calls: Arc<AtomicUsize>,
+}
+
+struct PublishedDuringCancellationTool;
+
+impl NativeTool for PublishedDuringCancellationTool {
+    type Input = CountInput;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            def_type: "function".into(),
+            function: FunctionDef {
+                name: "publish".into(),
+                description: "publish".into(),
+                parameters: json!({"type":"object","properties":{"amount":{"type":"integer"}}}),
+            },
+        }
+    }
+
+    fn admission(&self) -> ToolAdmission {
+        ToolAdmission::Exclusive
+    }
+
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<std::time::Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout {
+            duration: requested.unwrap_or(DEFAULT_TOOL_TIMEOUT),
+            disposition: ToolTimeoutDisposition::Settle,
+            remote_outcome_uncertain: false,
+        })
+    }
+
+    fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
+        serde_json::from_value(input)
+            .map_err(|error| ToolResult::text(format!("invalid input: {error}"), true))
+    }
+
+    fn permission_resources(
+        &self,
+        _input: &Self::Input,
+        _services: ToolServices<'_>,
+    ) -> Result<Vec<PermissionResource>, ToolResult> {
+        Ok(Vec::new())
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _input: Self::Input,
+        services: ToolServices<'a>,
+        context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, ToolResult> {
+        Box::pin(async move {
+            context.cancellation(services.runtime).cancelled().await;
+            ToolResult::text(
+                json!({"committed":true,"durability":"uncertain"}).to_string(),
+                true,
+            )
+        })
+    }
+}
+
+impl NativeTool for CancellationAwarePendingTool {
+    type Input = CountInput;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            def_type: "function".into(),
+            function: FunctionDef {
+                name: "pending".into(),
+                description: "pending".into(),
+                parameters: json!({"type":"object","properties":{"amount":{"type":"integer"}}}),
+            },
+        }
+    }
+
+    fn admission(&self) -> ToolAdmission {
+        ToolAdmission::Parallel
+    }
+
+    fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
+        serde_json::from_value(input)
+            .map_err(|error| ToolResult::text(format!("invalid input: {error}"), true))
+    }
+
+    fn permission_resources(
+        &self,
+        _input: &Self::Input,
+        _services: ToolServices<'_>,
+    ) -> Result<Vec<PermissionResource>, ToolResult> {
+        Ok(Vec::new())
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _input: Self::Input,
+        services: ToolServices<'a>,
+        context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, ToolResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            context.cancellation(services.runtime).cancelled().await;
+            ToolResult::text("cancelled by deadline", true)
+        })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathInput {
@@ -182,6 +292,203 @@ fn rejects_duplicate_names_and_native_types() {
     ));
 }
 
+#[tokio::test]
+async fn timeout_envelope_is_advertised_stripped_and_enforced() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let registry = ToolRegistry::builder()
+        .register(CancellationAwarePendingTool {
+            calls: Arc::clone(&calls),
+        })
+        .finish()
+        .unwrap();
+    let snapshot = registry.snapshot(["pending"]).unwrap();
+    let definition = &snapshot.definitions()[0];
+    assert_eq!(
+        definition.function.parameters["properties"]["_nac"]["properties"]["timeout_ms"]["minimum"],
+        1
+    );
+    assert_eq!(
+        definition.function.parameters["properties"]["_nac"]["properties"]["timeout_ms"]["maximum"],
+        3_600_000
+    );
+
+    let runtime = crate::tools::test_runtime();
+    let client = crate::model::ModelClient::new_for_test();
+    let result = snapshot
+        .invoke(
+            "pending",
+            json!({"amount":1,"_nac":{"timeout_ms":5}}),
+            ToolServices {
+                runtime: &runtime,
+                client: &client,
+            },
+            &ToolCallContext::default(),
+        )
+        .await;
+    assert!(result.is_error);
+    let value: Value = serde_json::from_str(result.content.as_text().unwrap()).unwrap();
+    assert_eq!(value["_nac"]["status"], "timed_out");
+    assert_eq!(value["_nac"]["timeout_ms"], 5);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn invalid_timeout_envelopes_fail_before_native_work() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let registry = ToolRegistry::builder()
+        .register(CountTool {
+            calls: Arc::clone(&calls),
+            name: "count",
+        })
+        .finish()
+        .unwrap();
+    let snapshot = registry.snapshot(["count"]).unwrap();
+    let runtime = crate::tools::test_runtime();
+    let client = crate::model::ModelClient::new_for_test();
+    for envelope in [
+        json!({}),
+        json!({"timeout_ms":0}),
+        json!({"timeout_ms":1.5}),
+        json!({"other":1}),
+    ] {
+        let result = snapshot
+            .invoke(
+                "count",
+                json!({"amount":1,"_nac":envelope}),
+                ToolServices {
+                    runtime: &runtime,
+                    client: &client,
+                },
+                &ToolCallContext::default(),
+            )
+            .await;
+        assert!(
+            result.is_error,
+            "invalid envelope unexpectedly ran: {}",
+            result.content
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let result = snapshot
+        .invoke(
+            "count",
+            json!({"amount":1,"_nac":null}),
+            ToolServices {
+                runtime: &runtime,
+                client: &client,
+            },
+            &ToolCallContext {
+                call_id: Some("call-1".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        !result.is_error,
+        "nullable strict envelope: {}",
+        result.content
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn deadline_reports_a_publication_that_settled_after_cancellation() {
+    let registry = ToolRegistry::builder()
+        .register(PublishedDuringCancellationTool)
+        .finish()
+        .unwrap();
+    let snapshot = registry.snapshot(["publish"]).unwrap();
+    let runtime = crate::tools::test_runtime();
+    let client = crate::model::ModelClient::new_for_test();
+    let result = snapshot
+        .invoke(
+            "publish",
+            json!({"amount":1,"_nac":{"timeout_ms":5}}),
+            ToolServices {
+                runtime: &runtime,
+                client: &client,
+            },
+            &ToolCallContext::default(),
+        )
+        .await;
+    assert!(result.is_error, "durability uncertainty remains an error");
+    let value: Value = serde_json::from_str(result.content.as_text().unwrap()).unwrap();
+    assert_eq!(value["committed"], true);
+    assert!(
+        value.get("_nac").is_none(),
+        "published result must win the deadline race"
+    );
+}
+
+#[tokio::test]
+async fn permission_wait_does_not_consume_the_execution_budget() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let registry = ToolRegistry::builder()
+        .register(CountTool {
+            calls: Arc::clone(&calls),
+            name: "count",
+        })
+        .finish()
+        .unwrap();
+    let snapshot = registry.snapshot(["count"]).unwrap();
+    let directory =
+        std::env::temp_dir().join(format!("nac-kernel-deadline-auth-{}", uuid::Uuid::new_v4()));
+    let store_path = directory.join("store.db");
+    crate::store::initialize(&store_path).unwrap();
+    crate::store::insert_test_session(&store_path, "session-a");
+    let broker = Arc::new(crate::permissions::PermissionBroker::new(
+        store_path.clone(),
+        "session-a".to_string(),
+        crate::permissions::PermissionBackend::Local,
+        0,
+        [crate::permissions::PermissionRule::new(
+            "count",
+            "*",
+            crate::permissions::PermissionEffect::Ask,
+        )],
+    ));
+    let bus = crate::events::SessionEventBus::new(Some("session-a".to_string()));
+    let _interactive = bus.subscribe_assistant_deltas();
+    broker.attach_event_bus(bus);
+    let mut runtime = crate::tools::test_runtime();
+    runtime.store_path = store_path;
+    runtime.session_id = Some("session-a".to_string());
+    runtime.permission_broker = Some(Arc::clone(&broker));
+    let client = crate::model::ModelClient::new_for_test();
+    let services = ToolServices {
+        runtime: &runtime,
+        client: &client,
+    };
+    let context = ToolCallContext {
+        call_id: Some("call-1".to_string()),
+        ..Default::default()
+    };
+
+    let invoke = snapshot.invoke(
+        "count",
+        json!({"amount":1,"_nac":{"timeout_ms":1}}),
+        services,
+        &context,
+    );
+    let approve = async {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        loop {
+            if let Some(request) = broker.pending().pop() {
+                broker
+                    .reply(&request.id, crate::permissions::PermissionReply::Once)
+                    .unwrap();
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    let (result, ()) = tokio::join!(invoke, approve);
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 #[test]
 fn capability_selection_is_ordered_strict_and_filterable() {
     struct OtherTool(CountTool);
@@ -287,6 +594,7 @@ async fn prepared_calls_validate_before_invocation_and_keep_identity() {
             &ToolCallContext {
                 call_id: Some("call-1".into()),
                 thread_name: None,
+                ..Default::default()
             },
         )
         .await;
@@ -319,6 +627,7 @@ async fn native_hard_denial_blocks_brokerless_model_invocation() {
             &ToolCallContext {
                 call_id: Some("call-1".into()),
                 thread_name: Some("worker".into()),
+                ..Default::default()
             },
         )
         .await;
@@ -436,6 +745,7 @@ async fn direct_broker_authorizes_between_prepare_and_side_effects() {
     let context = ToolCallContext {
         call_id: Some("call-1".to_string()),
         thread_name: None,
+        ..Default::default()
     };
 
     let headless = snapshot

@@ -110,7 +110,6 @@ use transport::*;
 type McpService = RunningService<RoleClient, NacMcpClientHandler>;
 const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MCP_TOOL_INVENTORY_TIMEOUT: Duration = Duration::from_secs(15);
-const MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -120,6 +119,7 @@ pub(crate) mod test_support {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -182,6 +182,136 @@ pub(crate) mod test_support {
             }
         });
         (url, handle)
+    }
+
+    pub(crate) fn start_deadline_http_mcp_server(
+    ) -> (String, thread::JoinHandle<()>, Arc<Mutex<Vec<Value>>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind deadline MCP server");
+        listener
+            .set_nonblocking(true)
+            .expect("set deadline MCP listener nonblocking");
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let arguments = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&arguments);
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut hung_once = false;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let Some(request) = read_fake_http_request(&mut stream) else {
+                            continue;
+                        };
+                        let Some(body) = request.body else {
+                            continue;
+                        };
+                        let method = body.get("method").and_then(Value::as_str).unwrap_or("");
+                        let id = body.get("id").cloned().unwrap_or(Value::Null);
+                        match method {
+                            "initialize" => {
+                                let response = json!({
+                                    "jsonrpc":"2.0",
+                                    "id":id,
+                                    "result":{
+                                        "protocolVersion":"2025-06-18",
+                                        "capabilities":{"tools":{"listChanged":false}},
+                                        "serverInfo":{"name":"deadline-http-mcp","version":"0.1.0"}
+                                    }
+                                });
+                                write_fake_http_response(
+                                    &mut stream,
+                                    "200 OK",
+                                    Some("application/json"),
+                                    &response.to_string(),
+                                );
+                            }
+                            "notifications/initialized" => {
+                                write_fake_http_response(&mut stream, "202 Accepted", None, "");
+                            }
+                            "tools/list" => {
+                                let response = json!({
+                                    "jsonrpc":"2.0",
+                                    "id":id,
+                                    "result":{"tools":[
+                                        {
+                                            "name":"echo",
+                                            "description":"Deadline test echo",
+                                            "inputSchema":{"type":"object","properties":{"message":{"type":"string"}}}
+                                        },
+                                        {
+                                            "name":"reserved_collision",
+                                            "description":"Invalid reserved namespace",
+                                            "inputSchema":{"type":"object","properties":{"_nac":{"type":"string"}}}
+                                        },
+                                        {
+                                            "name":"reserved_exact_collision",
+                                            "description":"Invalid exact reserved namespace",
+                                            "inputSchema":{
+                                                "type":"object",
+                                                "properties":{
+                                                    "_nac":{
+                                                        "type":["object","null"],
+                                                        "additionalProperties":false,
+                                                        "properties":{
+                                                            "timeout_ms":{"type":"integer","minimum":1,"maximum":3600000}
+                                                        },
+                                                        "required":["timeout_ms"]
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        {
+                                            "name":"non_object",
+                                            "description":"Invalid non-object schema",
+                                            "inputSchema":{"type":"string"}
+                                        }
+                                    ]}
+                                });
+                                write_fake_http_response(
+                                    &mut stream,
+                                    "200 OK",
+                                    Some("application/json"),
+                                    &response.to_string(),
+                                );
+                            }
+                            "tools/call" => {
+                                observed.lock().unwrap().push(
+                                    body.get("params")
+                                        .and_then(|params| params.get("arguments"))
+                                        .cloned()
+                                        .unwrap_or(Value::Null),
+                                );
+                                if !hung_once {
+                                    hung_once = true;
+                                    thread::sleep(Duration::from_millis(250));
+                                    continue;
+                                }
+                                let response = json!({
+                                    "jsonrpc":"2.0",
+                                    "id":id,
+                                    "result":{"content":[{"type":"text","text":"echoed"}],"isError":false}
+                                });
+                                write_fake_http_response(
+                                    &mut stream,
+                                    "200 OK",
+                                    Some("application/json"),
+                                    &response.to_string(),
+                                );
+                                break;
+                            }
+                            _ => {
+                                write_fake_http_response(&mut stream, "202 Accepted", None, "");
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (url, handle, arguments)
     }
 
     struct FakeHttpRequest {
@@ -330,10 +460,12 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        restore_env, shell_single_quote, start_fake_http_mcp_server, toml_string, unique_temp_dir,
+        restore_env, shell_single_quote, start_deadline_http_mcp_server,
+        start_fake_http_mcp_server, toml_string, unique_temp_dir,
     };
     use super::*;
     use crate::TEST_ENV_LOCK;
+    use serde_json::json;
     use std::fs;
 
     const MANAGED_EXA_CANARY: &str = "managed-server-mcp-isolation-canary";
@@ -708,6 +840,92 @@ args = ["-c", {}]
     }
 
     #[tokio::test]
+    async fn per_call_deadline_strips_envelope_and_leaves_http_mcp_usable() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let original_nac_home = env::var_os("NAC_HOME");
+        let original_xdg = env::var_os("XDG_CONFIG_HOME");
+        let nac_home = unique_temp_dir("nac-mcp-call-deadline");
+        fs::create_dir_all(&nac_home).unwrap();
+        let (http_url, http_server, observed) = start_deadline_http_mcp_server();
+        fs::write(
+            nac_home.join("config.toml"),
+            format!(
+                r#"
+[mcp_servers.hung]
+transport = "streamable_http"
+url = {}
+"#,
+                toml_string(&http_url)
+            ),
+        )
+        .unwrap();
+        unsafe {
+            env::set_var("NAC_HOME", &nac_home);
+        }
+
+        let cwd = std::env::current_dir().unwrap();
+        let outcome = McpRegistry::load_reporting_skips(
+            &cwd,
+            None,
+            &PathContext::new(&cwd),
+            McpTransportPolicy::All,
+            McpRootPolicy::None,
+        )
+        .await
+        .expect("deadline MCP server should load");
+        assert_eq!(outcome.skipped.len(), 3);
+        assert!(outcome.skipped.iter().any(|skipped| {
+            skipped.name == "mcp__hung__reserved_collision"
+                && skipped.reason.contains("reserved property '_nac'")
+        }));
+        assert!(outcome.skipped.iter().any(|skipped| {
+            skipped.name == "mcp__hung__reserved_exact_collision"
+                && skipped.reason.contains("reserved property '_nac'")
+        }));
+        assert!(outcome.skipped.iter().any(|skipped| {
+            skipped.name == "mcp__hung__non_object" && skipped.reason.contains("type 'object'")
+        }));
+        let registry = outcome
+            .registry
+            .expect("valid MCP capability should remain mounted");
+        let mut runtime = crate::tools::test_runtime();
+        runtime.mcp = Some(registry);
+        let client = crate::model::ModelClient::new_for_test();
+        let timed_out = crate::tools::execute_tool(
+            "mcp__hung__echo",
+            json!({"message":"first","_nac":{"timeout_ms":20}}),
+            &runtime,
+            &client,
+        )
+        .await;
+        assert!(timed_out.is_error);
+        let timed_out: Value = serde_json::from_str(timed_out.content.as_text().unwrap()).unwrap();
+        assert_eq!(timed_out["_nac"]["status"], "timed_out");
+        assert_eq!(timed_out["_nac"]["remote_outcome_uncertain"], true);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let recovered = crate::tools::execute_tool(
+            "mcp__hung__echo",
+            json!({"message":"second","_nac":{"timeout_ms":1000}}),
+            &runtime,
+            &client,
+        )
+        .await;
+        assert!(!recovered.is_error, "{}", recovered.content);
+        assert!(recovered.content.contains("echoed"));
+        let observed = observed.lock().unwrap();
+        assert_eq!(
+            observed.as_slice(),
+            &[json!({"message":"first"}), json!({"message":"second"})]
+        );
+
+        http_server.join().unwrap();
+        restore_env("NAC_HOME", original_nac_home);
+        restore_env("XDG_CONFIG_HOME", original_xdg);
+        let _ = fs::remove_dir_all(&nac_home);
+    }
+
+    #[tokio::test]
     async fn http_only_policy_loads_streamable_http_tools_and_skips_stdio() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let original_nac_home = env::var_os("NAC_HOME");
@@ -755,6 +973,11 @@ url = {}
         assert_eq!(
             definitions[0].function.description,
             "Echo from fake HTTP MCP"
+        );
+        assert_eq!(
+            definitions[0].function.parameters["properties"]["_nac"]["properties"]["timeout_ms"]
+                ["maximum"],
+            3_600_000
         );
         assert!(
             !marker.exists(),

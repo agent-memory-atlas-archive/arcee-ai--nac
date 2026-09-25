@@ -100,6 +100,8 @@ describe("tool presentation mapper", () => {
     ["timeout", { command_status: "timed_out" }, "timed-out"],
     ["cancel", { command_status: "cancelled" }, "cancelled"],
     ["spawn", { command_status: "spawn_error" }, "error"],
+    ["generic-timeout", { completion_status: "timed_out" }, "timed-out"],
+    ["generic-cancel", { completion_status: "cancelled" }, "cancelled"],
   ])("maps the %s terminal outcome", (name, options, status) => {
     expect(present(name, [started(name, "safe"), finished(name, options)])).toMatchObject({
       status,

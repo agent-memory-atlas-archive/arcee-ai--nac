@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
@@ -11,7 +12,10 @@ use crate::store::{
 use crate::traditional_children::TraditionalChildStartRequest;
 use crate::types::{FunctionDef, ToolDefinition};
 
-use super::kernel::{NativeTool, PermissionResource, ToolAdmission, ToolCallContext, ToolServices};
+use super::kernel::{
+    NativeTool, PermissionResource, ToolAdmission, ToolCallContext, ToolServices, ToolTimeout,
+    ToolTimeoutDisposition,
+};
 use super::ToolResult;
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +83,28 @@ impl NativeTool for SubagentTool {
         ToolAdmission::Parallel
     }
 
+    fn timeout(
+        &self,
+        input: &mut serde_json::Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        let background = input
+            .get("background")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(ToolTimeout {
+            duration: requested.unwrap_or(if background {
+                super::kernel::DEFAULT_TOOL_TIMEOUT
+            } else {
+                super::kernel::MAX_TOOL_TIMEOUT
+            }),
+            // Admission is a durable mutation: once a generation is accepted,
+            // its canonical running record must win a simultaneous deadline.
+            disposition: ToolTimeoutDisposition::Settle,
+            remote_outcome_uncertain: false,
+        })
+    }
+
     fn decode(&self, input: serde_json::Value) -> Result<Self::Input, ToolResult> {
         serde_json::from_value(input).map_err(|error| {
             ToolResult::text(format!("Error: invalid subagent input: {error}"), true)
@@ -103,7 +129,7 @@ impl NativeTool for SubagentTool {
         &'a self,
         input: Self::Input,
         services: ToolServices<'a>,
-        _context: &'a ToolCallContext,
+        context: &'a ToolCallContext,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let Some(parent_session_id) = services.runtime.session_id.clone() else {
@@ -153,12 +179,14 @@ impl NativeTool for SubagentTool {
             let generation = started.generation;
             let outcome = tokio::select! {
                 outcome = controller.wait(&child_session_id, generation) => outcome,
-                _ = services.runtime.command_cancellation.cancelled() => {
+                _ = context.cancellation(services.runtime).cancelled() => {
                     let cancel_controller = Arc::clone(&controller);
                     let cancel_parent = parent_session_id.clone();
                     let cancel_child = child_session_id.clone();
                     let cancellation = tokio::spawn(async move {
-                        cancel_controller.cancel(&cancel_parent, &cancel_child).await
+                        cancel_controller
+                            .cancel(&cancel_parent, &cancel_child, generation)
+                            .await
                     });
                     match cancellation.await {
                         Ok(Ok(cancelled)) => Ok(cancelled),
@@ -251,6 +279,18 @@ impl NativeTool for SubagentCancelTool {
         ToolAdmission::Exclusive
     }
 
+    fn timeout(
+        &self,
+        _input: &mut serde_json::Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout {
+            duration: requested.unwrap_or(super::kernel::DEFAULT_TOOL_TIMEOUT),
+            disposition: ToolTimeoutDisposition::Settle,
+            remote_outcome_uncertain: false,
+        })
+    }
+
     fn decode(&self, input: serde_json::Value) -> Result<Self::Input, ToolResult> {
         serde_json::from_value(input).map_err(|error| {
             ToolResult::text(
@@ -289,15 +329,20 @@ impl NativeTool for SubagentCancelTool {
                     Ok(controller) => controller,
                     Err(error) => return ToolResult::text(format!("Error: {error:#}"), true),
                 };
-            if let Err(error) = owned_child(
+            let child = match owned_child(
                 services.runtime,
                 &parent_session_id,
                 &input.child_session_id,
             ) {
-                return ToolResult::text(format!("Error: {error:#}"), true);
-            }
+                Ok(child) => child,
+                Err(error) => return ToolResult::text(format!("Error: {error:#}"), true),
+            };
             match controller
-                .cancel(&parent_session_id, &input.child_session_id)
+                .cancel(
+                    &parent_session_id,
+                    &input.child_session_id,
+                    child.generation,
+                )
                 .await
             {
                 Ok(child) => outcome_result(child),
@@ -401,6 +446,7 @@ mod tests {
             &'a self,
             _parent_session_id: &'a str,
             _child_session_id: &'a str,
+            _expected_generation: u64,
         ) -> ChildFuture<'a, TraditionalChildRecord> {
             Box::pin(async {
                 Ok(child(

@@ -34,11 +34,16 @@ export interface components {
         }
       | {
           call_id: string;
+          cleanup_duration_ms?: number | null;
           command_status?: null | components["schemas"]["CommandStatus"];
+          completion_status?: null | components["schemas"]["ToolCompletionStatus"];
           content_preview: string;
+          effective_timeout_ms?: number | null;
+          execution_duration_ms?: number | null;
           exit_code?: number | null;
           is_error: boolean;
           name: string;
+          remote_outcome_uncertain?: boolean;
           thread_name?: string | null;
           type: "tool_call_finished";
         }
@@ -1100,6 +1105,7 @@ export interface components {
       total_tokens: number;
     };
     ToolCall: { function: components["schemas"]["FunctionCall"]; id: string; type: string };
+    ToolCompletionStatus: "success" | "error" | "timed_out" | "cancelled";
     ToolContentPartSchema:
       | { text: string; type: "text" }
       | { image: components["schemas"]["ToolImageSchema"]; type: "image" };

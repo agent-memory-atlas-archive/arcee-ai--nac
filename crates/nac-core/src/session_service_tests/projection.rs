@@ -32,6 +32,11 @@ async fn frontend_snapshot_projects_sanitized_primary_tool_events_separately() {
             is_error: false,
             command_status: Some(crate::terminal::CommandStatus::Completed),
             exit_code: Some(0),
+            completion_status: Some(crate::events::ToolCompletionStatus::Success),
+            effective_timeout_ms: None,
+            execution_duration_ms: None,
+            cleanup_duration_ms: None,
+            remote_outcome_uncertain: false,
         });
     parts
         .service
@@ -825,6 +830,11 @@ async fn frontend_snapshot_restores_persisted_thread_activity() {
             is_error: false,
             command_status: None,
             exit_code: None,
+            completion_status: Some(crate::events::ToolCompletionStatus::Success),
+            effective_timeout_ms: None,
+            execution_duration_ms: None,
+            cleanup_duration_ms: None,
+            remote_outcome_uncertain: false,
         });
 
     let snapshot = parts.service.frontend_snapshot().await.unwrap();

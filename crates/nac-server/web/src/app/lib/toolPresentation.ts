@@ -152,6 +152,10 @@ function toolLabel(name: string): string {
 }
 
 function statusFromFinished(event: ToolFinished): ToolPresentationStatus {
+  if (event.completion_status === "timed_out") return "timed-out";
+  if (event.completion_status === "cancelled") return "cancelled";
+  if (event.completion_status === "error") return "error";
+  if (event.completion_status === "success") return "success";
   if (event.command_status === "timed_out") return "timed-out";
   if (event.command_status === "cancelled") return "cancelled";
   if (event.command_status === "spawn_error") return "error";

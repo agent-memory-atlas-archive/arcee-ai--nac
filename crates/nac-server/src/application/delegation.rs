@@ -115,9 +115,9 @@ impl<'a> DelegationApplication<'a> {
         parent_session_id: &str,
         child_session_id: &str,
     ) -> Result<TraditionalChildRecord> {
-        self.traditional_child(parent_session_id, child_session_id)?;
+        let child = self.traditional_child(parent_session_id, child_session_id)?;
         nac_core::traditional_children::controller_for(&self.manager.inner.store_path)?
-            .cancel(parent_session_id, child_session_id)
+            .cancel(parent_session_id, child_session_id, child.generation)
             .await
     }
 
@@ -190,9 +190,13 @@ impl<'a> DelegationApplication<'a> {
         parent_session_id: &str,
         orchestrator_session_id: &str,
     ) -> Result<ManagedOrchestratorRecord> {
-        self.managed_orchestrator(parent_session_id, orchestrator_session_id)?;
+        let orchestrator = self.managed_orchestrator(parent_session_id, orchestrator_session_id)?;
         nac_core::orchestration_control::controller_for(&self.manager.inner.store_path)?
-            .cancel(parent_session_id, orchestrator_session_id)
+            .cancel(
+                parent_session_id,
+                orchestrator_session_id,
+                orchestrator.generation,
+            )
             .await
     }
 }

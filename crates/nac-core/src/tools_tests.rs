@@ -641,6 +641,7 @@ async fn brokerless_worker_model_calls_still_enforce_native_hard_denials() {
     let context = kernel::ToolCallContext {
         call_id: Some("call-worker-denied".to_string()),
         thread_name: Some("worker".to_string()),
+        ..Default::default()
     };
 
     for (tool, input, denial) in [
@@ -664,6 +665,105 @@ async fn brokerless_worker_model_calls_still_enforce_native_hard_denials() {
         );
     }
     let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn terminal_timeout_envelope_rejects_conflicting_yield_alias() {
+    let runtime = crate::tools::test_runtime();
+    let client = crate::model::ModelClient::new_for_test();
+    let registry = worker_tool_registry(false).unwrap();
+    let snapshot = registry.snapshot(super::WORKER_TOOL_NAMES).unwrap();
+    let error = snapshot
+        .prepare(
+            "exec_command",
+            serde_json::json!({
+                "cmd":"printf safe",
+                "yield_time_ms":20,
+                "_nac":{"timeout_ms":10}
+            }),
+            kernel::ToolServices {
+                runtime: &runtime,
+                client: &client,
+            },
+        )
+        .err()
+        .expect("conflicting aliases must fail before authorization");
+    assert!(
+        error.content.to_string().contains("conflicts"),
+        "{}",
+        error.content
+    );
+}
+
+#[test]
+fn terminal_timeout_envelope_does_not_hide_a_malformed_yield_alias() {
+    let runtime = crate::tools::test_runtime();
+    let client = crate::model::ModelClient::new_for_test();
+    let registry = worker_tool_registry(false).unwrap();
+    let snapshot = registry.snapshot(super::WORKER_TOOL_NAMES).unwrap();
+    for (name, args) in [
+        (
+            "exec_command",
+            serde_json::json!({
+                "cmd":"printf safe",
+                "yield_time_ms":1.5,
+                "_nac":{"timeout_ms":10}
+            }),
+        ),
+        (
+            "write_stdin",
+            serde_json::json!({
+                "session_id":"terminal-1",
+                "yield-time_ms":1.5,
+                "_nac":{"timeout_ms":10}
+            }),
+        ),
+    ] {
+        let error = snapshot
+            .prepare(
+                name,
+                args,
+                kernel::ToolServices {
+                    runtime: &runtime,
+                    client: &client,
+                },
+            )
+            .err()
+            .expect("malformed yield alias must survive envelope reconciliation");
+        assert!(error.is_error);
+        assert!(
+            !error.content.to_string().contains("conflicts with"),
+            "the malformed alias must reach normal input decoding: {}",
+            error.content
+        );
+    }
+}
+
+#[test]
+fn discovery_tools_reconcile_their_shorter_builtin_cap() {
+    use super::kernel::NativeTool as _;
+
+    for timeout in [
+        super::glob::GlobTool
+            .timeout(&mut serde_json::json!({}), None)
+            .unwrap(),
+        super::grep::GrepTool
+            .timeout(
+                &mut serde_json::json!({}),
+                Some(std::time::Duration::from_secs(60)),
+            )
+            .unwrap(),
+    ] {
+        assert_eq!(timeout.duration, super::discovery::QUERY_TIMEOUT);
+        assert_eq!(timeout.disposition, kernel::ToolTimeoutDisposition::Bounded);
+    }
+    let requested = super::grep::GrepTool
+        .timeout(
+            &mut serde_json::json!({}),
+            Some(std::time::Duration::from_millis(10)),
+        )
+        .unwrap();
+    assert_eq!(requested.duration, std::time::Duration::from_millis(10));
 }
 
 #[tokio::test]
@@ -713,6 +813,7 @@ async fn direct_terminal_input_requires_once_only_approval_for_the_exact_handle(
     let context = kernel::ToolCallContext {
         call_id: Some("call-terminal-input".to_string()),
         thread_name: None,
+        ..Default::default()
     };
 
     let started = snapshot

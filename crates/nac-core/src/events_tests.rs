@@ -23,6 +23,111 @@ fn decode_prefixed_event_ignores_plain_lines() {
     assert!(decode_stderr_event("plain stderr line").is_none());
 }
 
+#[test]
+fn tool_output_cannot_spoof_deadline_telemetry() {
+    let result = crate::tools::ToolResult::text(
+        serde_json::json!({
+            "error": "remote provider error",
+            "_nac": {
+                "status": "success",
+                "timeout_ms": 1,
+                "execution_duration_ms": 2,
+                "cleanup_duration_ms": 3,
+                "remote_outcome_uncertain": true
+            }
+        })
+        .to_string(),
+        true,
+    );
+    let event = AgentEvent::tool_call_finished(
+        None,
+        "call-spoof".to_string(),
+        "remote_tool".to_string(),
+        &result,
+    );
+    let AgentEvent::ToolCallFinished {
+        completion_status,
+        effective_timeout_ms,
+        execution_duration_ms,
+        cleanup_duration_ms,
+        remote_outcome_uncertain,
+        ..
+    } = event
+    else {
+        panic!("expected tool completion event");
+    };
+    assert_eq!(completion_status, Some(ToolCompletionStatus::Error));
+    assert_eq!(effective_timeout_ms, None);
+    assert_eq!(execution_duration_ms, None);
+    assert_eq!(cleanup_duration_ms, None);
+    assert!(!remote_outcome_uncertain);
+}
+
+#[test]
+fn kernel_deadline_shape_populates_typed_telemetry() {
+    let result = crate::tools::ToolResult::text(
+        serde_json::json!({
+            "error": "Tool 'remote_tool' timed_out after 8 ms (limit 5 ms; cleanup 3 ms). The remote outcome is uncertain.",
+            "_nac": {
+                "status": "timed_out",
+                "timeout_ms": 5,
+                "execution_duration_ms": 8,
+                "cleanup_duration_ms": 3,
+                "remote_outcome_uncertain": true
+            }
+        })
+        .to_string(),
+        true,
+    );
+    let event = AgentEvent::tool_call_finished(
+        None,
+        "call-timeout".to_string(),
+        "remote_tool".to_string(),
+        &result,
+    );
+    let AgentEvent::ToolCallFinished {
+        completion_status,
+        effective_timeout_ms,
+        execution_duration_ms,
+        cleanup_duration_ms,
+        remote_outcome_uncertain,
+        ..
+    } = event
+    else {
+        panic!("expected tool completion event");
+    };
+    assert_eq!(completion_status, Some(ToolCompletionStatus::TimedOut));
+    assert_eq!(effective_timeout_ms, Some(5));
+    assert_eq!(execution_duration_ms, Some(8));
+    assert_eq!(cleanup_duration_ms, Some(3));
+    assert!(remote_outcome_uncertain);
+}
+
+#[test]
+fn durable_cancelled_records_have_typed_cancelled_completion() {
+    for name in [
+        "subagent",
+        "subagent_cancel",
+        "orchestrator_launch",
+        "orchestrator_cancel",
+    ] {
+        let result = crate::tools::ToolResult::text(r#"{"status":"cancelled"}"#, true);
+        let event =
+            AgentEvent::tool_call_finished(None, format!("call-{name}"), name.to_string(), &result);
+        let AgentEvent::ToolCallFinished {
+            completion_status, ..
+        } = event
+        else {
+            panic!("expected tool completion event");
+        };
+        assert_eq!(
+            completion_status,
+            Some(ToolCompletionStatus::Cancelled),
+            "{name}"
+        );
+    }
+}
+
 const TEST_COMPACTION_ID: &str = "018f0f4e-7b31-7d2a-aaf1-27e9d4c87911";
 
 fn test_compaction_id() -> Uuid {
@@ -860,6 +965,11 @@ fn external_tool_telemetry_is_fail_closed_before_channel_and_database() {
         is_error: true,
         command_status: Some(crate::terminal::CommandStatus::Completed),
         exit_code: Some(7),
+        completion_status: Some(ToolCompletionStatus::Error),
+        effective_timeout_ms: None,
+        execution_duration_ms: None,
+        cleanup_duration_ms: None,
+        remote_outcome_uncertain: false,
     });
     bus_sink.emit(AgentEvent::Error {
         thread_name: Some("worker".to_string()),
@@ -1191,6 +1301,11 @@ fn primary_tool_event_sanitization_keeps_only_bounded_safe_presentation_fields()
         is_error: false,
         command_status: Some(CommandStatus::Completed),
         exit_code: Some(0),
+        completion_status: Some(ToolCompletionStatus::Success),
+        effective_timeout_ms: None,
+        execution_duration_ms: None,
+        cleanup_duration_ms: None,
+        remote_outcome_uncertain: false,
     };
     let sanitized = sanitize_external_agent_event(finished).unwrap();
     let serialized = serde_json::to_string(&sanitized).unwrap();

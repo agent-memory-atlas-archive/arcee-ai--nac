@@ -40,6 +40,19 @@ function page(ids: number[], hasOlder: boolean): ThreadEventPage {
 }
 
 describe("tool-call status", () => {
+  it.each(["error", "timed_out", "cancelled"] as const)(
+    "renders typed %s tool completions as failures",
+    (completion_status) => {
+      expect(
+        toolCallFailed({
+          is_error: false,
+          content_preview: completion_status,
+          completion_status,
+        }),
+      ).toBe(true);
+    },
+  );
+
   it.each(["timed_out", "cancelled", "spawn_error"] as const)(
     "renders %s commands as failures",
     (command_status) => {
@@ -69,6 +82,27 @@ describe("tool-call status", () => {
 
     expect(line).toMatchObject({ mark: "✓", isError: false });
   });
+
+  it.each([
+    ["timed_out", "◷"],
+    ["cancelled", "■"],
+  ] as const)(
+    "gives typed %s completions a distinct thread-log mark",
+    (completion_status, mark) => {
+      const line = threadLogLine(
+        {
+          type: "tool_call_finished",
+          call_id: completion_status,
+          name: "read",
+          content_preview: completion_status,
+          is_error: true,
+          completion_status,
+        },
+        0,
+      );
+      expect(line).toMatchObject({ mark, isError: true });
+    },
+  );
 
   it("keeps legacy timeout previews marked as failures", () => {
     expect(

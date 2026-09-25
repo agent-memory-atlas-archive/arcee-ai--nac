@@ -136,6 +136,7 @@ impl nac_core::traditional_children::TraditionalChildController
         &'a self,
         parent_session_id: &'a str,
         child_session_id: &'a str,
+        expected_generation: u64,
     ) -> nac_core::traditional_children::ChildFuture<'a, nac_core::store::TraditionalChildRecord>
     {
         Box::pin(async move {
@@ -157,12 +158,27 @@ impl nac_core::traditional_children::TraditionalChildController
                 .reconcile_traditional_child_terminal()
                 .await?
                 .unwrap_or(child);
+            if child.generation != expected_generation {
+                return Err(anyhow!(
+                    "traditional child generation {expected_generation} was superseded by {}",
+                    child.generation
+                ));
+            }
             if child.status != nac_core::store::TraditionalChildStatus::Running {
                 return Ok(child);
             }
+            let expected_run_id = child
+                .run_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("running traditional child is missing its run identity"))?;
             let active = service.active_run().ok_or_else(|| {
                 anyhow!("traditional child '{child_session_id}' is running in another process")
             })?;
+            if active.run_id.as_str() != expected_run_id {
+                return Err(anyhow!(
+                    "traditional child generation {expected_generation} is no longer active"
+                ));
+            }
             service
                 .request_cancel(&active.run_id)
                 .await
@@ -388,17 +404,27 @@ impl nac_core::orchestration_control::OrchestrationController for ServerOrchestr
         &'a self,
         parent_session_id: &'a str,
         orchestrator_session_id: &'a str,
+        expected_generation: u64,
     ) -> nac_core::orchestration_control::OrchestrationFuture<'a, ManagedOrchestratorRecord> {
         Box::pin(async move {
             let manager = self.manager()?;
             let relation = manager
                 .delegation()
                 .managed_orchestrator(parent_session_id, orchestrator_session_id)?;
+            if relation.generation != expected_generation {
+                return Err(anyhow!(
+                    "managed orchestrator generation {expected_generation} was superseded by {}",
+                    relation.generation
+                ));
+            }
             if relation.status != ManagedOrchestratorStatus::Running {
                 return Ok(relation);
             }
+            let expected_run_id = relation.run_id.as_deref().ok_or_else(|| {
+                anyhow!("running managed orchestrator is missing its run identity")
+            })?;
             manager
-                .cancel_active_run_unchecked(orchestrator_session_id)
+                .cancel_active_run_exact(orchestrator_session_id, expected_run_id)
                 .await?;
             manager
                 .monitor_managed_orchestrator(orchestrator_session_id, relation.generation)

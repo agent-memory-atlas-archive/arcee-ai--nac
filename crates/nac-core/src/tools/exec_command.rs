@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::terminal::{
     CommandStatus, OutputStream, DEFAULT_OUTPUT_PAGE_BYTES, MAX_OUTPUT_PAGE_BYTES,
 };
-use crate::tools::{ToolResult, ToolRuntime};
+use crate::tools::{ThreadCancellation, ToolResult, ToolRuntime};
 use crate::types::{FunctionDef, ToolDefinition};
 
 pub fn exec_command_definition() -> ToolDefinition {
@@ -75,8 +75,17 @@ pub fn read_command_output_definition() -> ToolDefinition {
     }
 }
 
+#[cfg(test)]
 pub async fn execute_exec_command(args: &Value, runtime: &ToolRuntime) -> ToolResult {
-    match execute_exec_command_inner(args, runtime).await {
+    execute_exec_command_with_cancellation(args, runtime, &runtime.command_cancellation).await
+}
+
+pub(crate) async fn execute_exec_command_with_cancellation(
+    args: &Value,
+    runtime: &ToolRuntime,
+    cancellation: &ThreadCancellation,
+) -> ToolResult {
+    match execute_exec_command_inner(args, runtime, cancellation).await {
         Ok((content, is_error)) => ToolResult {
             content: content.into(),
             is_error,
@@ -88,8 +97,12 @@ pub async fn execute_exec_command(args: &Value, runtime: &ToolRuntime) -> ToolRe
     }
 }
 
-async fn execute_exec_command_inner(args: &Value, runtime: &ToolRuntime) -> Result<(String, bool)> {
-    if runtime.command_cancellation.is_cancelled() {
+async fn execute_exec_command_inner(
+    args: &Value,
+    runtime: &ToolRuntime,
+    cancellation: &ThreadCancellation,
+) -> Result<(String, bool)> {
+    if cancellation.is_cancelled() {
         return Err(anyhow!(
             "run was cancelled before the command process could start"
         ));
@@ -124,7 +137,7 @@ async fn execute_exec_command_inner(args: &Value, runtime: &ToolRuntime) -> Resu
                 yield_ms,
                 max_output,
                 &runtime.backend,
-                Some(&runtime.command_cancellation),
+                Some(cancellation),
                 &extra_envs,
             )
             .await;
@@ -147,18 +160,12 @@ async fn execute_exec_command_inner(args: &Value, runtime: &ToolRuntime) -> Resu
             120,
             40,
             &runtime.backend,
-            Some(&runtime.command_cancellation),
+            Some(cancellation),
             &extra_envs,
         )
         .await?;
     let output = manager
-        .write_stdin(
-            &session_name,
-            "",
-            yield_ms,
-            max_output,
-            Some(&runtime.command_cancellation),
-        )
+        .write_stdin(&session_name, "", yield_ms, max_output, Some(cancellation))
         .await?;
     runtime.remember_output_environment(&output.output_id, command_environment.clone());
     Ok((
@@ -167,7 +174,16 @@ async fn execute_exec_command_inner(args: &Value, runtime: &ToolRuntime) -> Resu
     ))
 }
 
+#[cfg(test)]
 pub async fn execute_write_stdin(args: &Value, runtime: &ToolRuntime) -> ToolResult {
+    execute_write_stdin_with_cancellation(args, runtime, &runtime.command_cancellation).await
+}
+
+pub(crate) async fn execute_write_stdin_with_cancellation(
+    args: &Value,
+    runtime: &ToolRuntime,
+    cancellation: &ThreadCancellation,
+) -> ToolResult {
     let result: Result<_> = async {
         let session_id = require_str(args, "session_id")?;
         let chars = args.get("chars").and_then(Value::as_str).unwrap_or("");
@@ -183,18 +199,12 @@ pub async fn execute_write_stdin(args: &Value, runtime: &ToolRuntime) -> ToolRes
             .unwrap_or(8_000) as usize;
         let mut output = runtime
             .terminal_manager
-            .write_stdin(
-                &session_id,
-                chars,
-                yield_ms,
-                max_output,
-                Some(&runtime.command_cancellation),
-            )
+            .write_stdin(&session_id, chars, yield_ms, max_output, Some(cancellation))
             .await?;
         if retain && output.session_name.is_some() {
             runtime
                 .terminal_manager
-                .retain_with_cancellation(&session_id, Some(&runtime.command_cancellation))
+                .retain_with_cancellation(&session_id, Some(cancellation))
                 .await?;
             output.retained = true;
         }

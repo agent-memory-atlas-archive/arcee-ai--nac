@@ -1,14 +1,16 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use crate::sandbox::{FileIoMode, HostPathResolution};
 use crate::tools::mutation::{
-    argument_error, execute_remote, permission_error, required_string, write_local,
-    write_local_bound, write_mounted,
+    argument_error, execute_remote_cancellable, permission_error, required_string,
+    write_local_bound_cancellable, write_local_cancellable, write_mounted_cancellable,
 };
 use crate::tools::{
-    kernel, resolve_workspace_path, shared_workspace_gate, ToolResult, ToolRuntime,
+    kernel, resolve_workspace_path, shared_workspace_gate, ThreadCancellation, ToolResult,
+    ToolRuntime,
 };
 use crate::types::{FunctionDef, ToolDefinition};
 
@@ -23,6 +25,18 @@ impl kernel::NativeTool for WriteTool {
 
     fn admission(&self) -> kernel::ToolAdmission {
         kernel::ToolAdmission::Exclusive
+    }
+
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<kernel::ToolTimeout, ToolResult> {
+        Ok(kernel::ToolTimeout {
+            duration: requested.unwrap_or(kernel::DEFAULT_TOOL_TIMEOUT),
+            disposition: kernel::ToolTimeoutDisposition::Settle,
+            remote_outcome_uncertain: false,
+        })
     }
 
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
@@ -75,12 +89,18 @@ impl kernel::NativeTool for WriteTool {
         &'a self,
         input: Self::Input,
         services: kernel::ToolServices<'a>,
-        _context: &'a kernel::ToolCallContext,
+        context: &'a kernel::ToolCallContext,
     ) -> futures_util::future::BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let gate = shared_workspace_gate(services.runtime);
-            let _write = gate.write().await;
-            execute(input, services.runtime).await
+            let cancellation = context.cancellation(services.runtime);
+            let _write = tokio::select! {
+                guard = gate.write() => guard,
+                () = cancellation.cancelled() => {
+                    return ToolResult::text("Error: write cancelled before workspace admission", true);
+                }
+            };
+            execute_with_cancellation(input, services.runtime, cancellation).await
         })
     }
 }
@@ -109,7 +129,16 @@ pub fn definition() -> ToolDefinition {
     }
 }
 
+#[cfg(test)]
 pub async fn execute(args: Value, runtime: &ToolRuntime) -> ToolResult {
+    execute_with_cancellation(args, runtime, &runtime.command_cancellation).await
+}
+
+async fn execute_with_cancellation(
+    args: Value,
+    runtime: &ToolRuntime,
+    cancellation: &ThreadCancellation,
+) -> ToolResult {
     let path = match required_string(&args, "path") {
         Ok(path) => path,
         Err(error) => return error,
@@ -138,12 +167,13 @@ pub async fn execute(args: Value, runtime: &ToolRuntime) -> ToolResult {
                         "atomic write is not supported for a single-file sandbox mount: {path}"
                     ));
                 }
-                return write_mounted(
+                return write_mounted_cancellable(
                     host_path.root,
                     host_path.relative,
                     path,
                     content,
                     expected_revision,
+                    Some(cancellation),
                 )
                 .await;
             }
@@ -157,7 +187,7 @@ pub async fn execute(args: Value, runtime: &ToolRuntime) -> ToolResult {
             }
             HostPathResolution::Unmounted => {}
         }
-        return execute_remote(
+        return execute_remote_cancellable(
             json!({
                 "operation": "write",
                 "path": path,
@@ -166,6 +196,7 @@ pub async fn execute(args: Value, runtime: &ToolRuntime) -> ToolResult {
                 "content": content,
             }),
             runtime,
+            Some(cancellation),
         )
         .await;
     }
@@ -175,19 +206,21 @@ pub async fn execute(args: Value, runtime: &ToolRuntime) -> ToolResult {
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        write_local_bound(
+        write_local_bound_cancellable(
             resolve_workspace_path(runtime, PathBuf::from(&path)),
             path,
             content,
             expected_revision,
+            Some(cancellation),
         )
         .await
     } else {
-        write_local(
+        write_local_cancellable(
             resolve_workspace_path(runtime, PathBuf::from(&path)),
             path,
             content,
             expected_revision,
+            Some(cancellation),
         )
         .await
     }

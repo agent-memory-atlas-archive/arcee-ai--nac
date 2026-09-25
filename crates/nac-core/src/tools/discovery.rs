@@ -3,7 +3,6 @@ use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -56,7 +55,7 @@ const MAX_ROOTS: usize = 32;
 const MAX_GLOBS: usize = 128;
 const MAX_LIMIT: usize = 1000;
 const MAX_CURSOR_BYTES: usize = 4096;
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CURSOR_VERSION: u64 = 1;
 
 #[cfg(test)]
@@ -121,18 +120,12 @@ pub(crate) async fn execute(tool: &'static str, args: Value, runtime: &ToolRunti
             None,
         );
     }
-    let result = tokio::time::timeout(QUERY_TIMEOUT, execute_inner(tool, args, runtime)).await;
-    match result {
-        Ok(Ok(value)) => ToolResult {
+    match execute_inner(tool, args, runtime).await {
+        Ok(value) => ToolResult {
             content: (value.to_string()).into(),
             is_error: false,
         },
-        Ok(Err(error)) => error_result(error.code, &error.message, error.path.as_deref()),
-        Err(_) => error_result(
-            "search_timeout",
-            "search exceeded the query time limit",
-            None,
-        ),
+        Err(error) => error_result(error.code, &error.message, error.path.as_deref()),
     }
 }
 

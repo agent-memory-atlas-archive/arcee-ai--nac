@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::tools::kernel::{
-    NativeTool, PermissionResource, ToolAdmission, ToolCallContext, ToolServices,
+    NativeTool, PermissionResource, ToolAdmission, ToolCallContext, ToolServices, ToolTimeout,
 };
 use crate::tools::{ThreadCancellation, ToolResult};
 use crate::types::{FunctionDef, ToolDefinition};
@@ -171,6 +171,18 @@ impl NativeTool for WebSearchTool {
         ToolAdmission::Parallel
     }
 
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout::bounded(
+            requested
+                .unwrap_or(crate::tools::kernel::DEFAULT_TOOL_TIMEOUT)
+                .min(TOTAL_TIMEOUT),
+        ))
+    }
+
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
         decode_search(input)
     }
@@ -193,7 +205,7 @@ impl NativeTool for WebSearchTool {
         &'a self,
         input: Self::Input,
         services: ToolServices<'a>,
-        _context: &'a ToolCallContext,
+        context: &'a ToolCallContext,
     ) -> futures_util::future::BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let Some(credential) = services.runtime.web_credential.as_ref() else {
@@ -207,7 +219,7 @@ impl NativeTool for WebSearchTool {
                 input,
                 credential,
                 endpoint,
-                &services.runtime.command_cancellation,
+                context.cancellation(services.runtime),
             )
             .await
             {
@@ -227,6 +239,18 @@ impl NativeTool for WebFetchTool {
 
     fn admission(&self) -> ToolAdmission {
         ToolAdmission::Parallel
+    }
+
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout::bounded(
+            requested
+                .unwrap_or(crate::tools::kernel::DEFAULT_TOOL_TIMEOUT)
+                .min(TOTAL_TIMEOUT),
+        ))
     }
 
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
@@ -250,7 +274,7 @@ impl NativeTool for WebFetchTool {
         &'a self,
         input: Self::Input,
         services: ToolServices<'a>,
-        _context: &'a ToolCallContext,
+        context: &'a ToolCallContext,
     ) -> futures_util::future::BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let Some(credential) = services.runtime.web_credential.as_ref() else {
@@ -264,7 +288,7 @@ impl NativeTool for WebFetchTool {
                 input,
                 credential,
                 endpoint,
-                &services.runtime.command_cancellation,
+                context.cancellation(services.runtime),
             )
             .await
             {
@@ -275,8 +299,17 @@ impl NativeTool for WebFetchTool {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the two static first-party object schemas cannot collide with the reserved envelope"
+)]
 pub(crate) fn definitions() -> [ToolDefinition; 2] {
-    [search_definition(), fetch_definition()]
+    let mut definitions = [search_definition(), fetch_definition()];
+    for definition in &mut definitions {
+        crate::tools::kernel::decorate_timeout_schema(&mut definition.function.parameters)
+            .expect("built-in web schemas support the NAC timeout envelope");
+    }
+    definitions
 }
 
 fn search_definition() -> ToolDefinition {
@@ -540,49 +573,44 @@ async fn request_json<T: serde::de::DeserializeOwned>(
     let client = client_builder
         .build()
         .context("failed to initialize Exa HTTP client")?;
-    let operation = async {
-        for attempt in 0..=MAX_RETRIES {
+    for attempt in 0..=MAX_RETRIES {
+        if cancellation.is_cancelled() {
+            return Err(anyhow!("web retrieval cancelled"));
+        }
+        let send = client
+            .post(endpoint.clone())
+            .header("x-api-key", credential.secret())
+            .header("accept", "application/json")
+            .json(&body)
+            .send();
+        let response = tokio::select! {
+            response = send => response.context("Exa request failed")?,
+            () = cancellation.cancelled() => return Err(anyhow!("web retrieval cancelled")),
+        };
+        let status = response.status();
+        let bytes = read_bounded_body(response, cancellation).await?;
+        if status.is_success() {
             if cancellation.is_cancelled() {
                 return Err(anyhow!("web retrieval cancelled"));
             }
-            let send = client
-                .post(endpoint.clone())
-                .header("x-api-key", credential.secret())
-                .header("accept", "application/json")
-                .json(&body)
-                .send();
-            let response = tokio::select! {
-                response = send => response.context("Exa request failed")?,
-                () = cancellation.cancelled() => return Err(anyhow!("web retrieval cancelled")),
-            };
-            let status = response.status();
-            let bytes = read_bounded_body(response, cancellation).await?;
-            if status.is_success() {
-                if cancellation.is_cancelled() {
-                    return Err(anyhow!("web retrieval cancelled"));
-                }
-                let decoded = serde_json::from_slice(&bytes)
-                    .context("Exa returned an invalid bounded JSON response")?;
-                if cancellation.is_cancelled() {
-                    return Err(anyhow!("web retrieval cancelled"));
-                }
-                return Ok(decoded);
+            let decoded = serde_json::from_slice(&bytes)
+                .context("Exa returned an invalid bounded JSON response")?;
+            if cancellation.is_cancelled() {
+                return Err(anyhow!("web retrieval cancelled"));
             }
-            if is_retryable(status) && attempt < MAX_RETRIES {
-                let delay = Duration::from_millis(250 * (1_u64 << attempt));
-                tokio::select! {
-                    () = tokio::time::sleep(delay) => {},
-                    () = cancellation.cancelled() => return Err(anyhow!("web retrieval cancelled")),
-                }
-                continue;
-            }
-            return Err(provider_status_error(status, &bytes, credential));
+            return Ok(decoded);
         }
-        unreachable!("bounded retry loop always returns")
-    };
-    tokio::time::timeout(TOTAL_TIMEOUT, operation)
-        .await
-        .map_err(|_| anyhow!("Exa request exceeded the total timeout"))?
+        if is_retryable(status) && attempt < MAX_RETRIES {
+            let delay = Duration::from_millis(250 * (1_u64 << attempt));
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {},
+                () = cancellation.cancelled() => return Err(anyhow!("web retrieval cancelled")),
+            }
+            continue;
+        }
+        return Err(provider_status_error(status, &bytes, credential));
+    }
+    unreachable!("bounded retry loop always returns")
 }
 
 async fn read_bounded_body(

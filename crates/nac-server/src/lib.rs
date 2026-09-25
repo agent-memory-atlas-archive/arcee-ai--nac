@@ -1529,10 +1529,6 @@ impl SessionManager {
         self.session_runs().cancel(session_id).await
     }
 
-    async fn cancel_active_run_unchecked(&self, session_id: &str) -> Result<()> {
-        self.session_runs().cancel_unchecked(session_id).await
-    }
-
     /// Cancel every run owned by this process before a graceful server stop.
     ///
     /// Peer NAC processes keep ownership of their own durable leases. Runs

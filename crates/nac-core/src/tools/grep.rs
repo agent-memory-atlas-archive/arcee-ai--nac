@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::tools::{discovery, kernel, shared_workspace_gate, ToolResult, ToolRuntime};
 use crate::types::{FunctionDef, ToolDefinition};
@@ -14,6 +15,18 @@ impl kernel::NativeTool for GrepTool {
 
     fn admission(&self) -> kernel::ToolAdmission {
         kernel::ToolAdmission::Parallel
+    }
+
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<kernel::ToolTimeout, ToolResult> {
+        Ok(kernel::ToolTimeout::bounded(
+            requested
+                .unwrap_or(kernel::DEFAULT_TOOL_TIMEOUT)
+                .min(discovery::QUERY_TIMEOUT),
+        ))
     }
 
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
