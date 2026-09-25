@@ -423,9 +423,14 @@ impl nac_core::orchestration_control::OrchestrationController for ServerOrchestr
             let expected_run_id = relation.run_id.as_deref().ok_or_else(|| {
                 anyhow!("running managed orchestrator is missing its run identity")
             })?;
-            manager
+            let outcome = manager
                 .cancel_active_run_exact_unchecked(orchestrator_session_id, expected_run_id)
                 .await?;
+            if outcome == crate::application::session_runs::ExactCancelOutcome::ActiveRunMismatch {
+                return Err(anyhow!(
+                    "managed orchestrator generation {expected_generation} is no longer active"
+                ));
+            }
             manager
                 .monitor_managed_orchestrator(orchestrator_session_id, relation.generation)
                 .await

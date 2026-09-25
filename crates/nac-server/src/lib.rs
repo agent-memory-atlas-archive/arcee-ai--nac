@@ -1533,7 +1533,7 @@ impl SessionManager {
         &self,
         session_id: &str,
         run_id: &str,
-    ) -> Result<()> {
+    ) -> Result<application::session_runs::ExactCancelOutcome> {
         self.session_runs()
             .cancel_exact_unchecked(session_id, run_id)
             .await

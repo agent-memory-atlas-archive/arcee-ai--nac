@@ -348,6 +348,9 @@ impl AgentEvent {
                 _ => None,
             })
             .or_else(|| {
+                if !result.is_error {
+                    return None;
+                }
                 let content = result.content.as_text()?;
                 if name == "thread" && content.contains(" timed out after ") {
                     Some(ToolCompletionStatus::TimedOut)

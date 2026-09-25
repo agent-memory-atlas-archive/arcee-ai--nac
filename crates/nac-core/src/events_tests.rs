@@ -64,6 +64,31 @@ fn tool_output_cannot_spoof_deadline_telemetry() {
 }
 
 #[test]
+fn successful_tool_output_cannot_spoof_completion_status() {
+    for (name, content) in [
+        ("thread", "thread worker timed out after producing a report"),
+        ("thread", "thread worker was cancelled by its own caller"),
+        ("subagent", r#"{"status":"cancelled"}"#),
+        ("orchestrator_launch", r#"{"status":"cancelled"}"#),
+    ] {
+        let result = crate::tools::ToolResult::text(content, false);
+        let event =
+            AgentEvent::tool_call_finished(None, format!("call-{name}"), name.to_string(), &result);
+        let AgentEvent::ToolCallFinished {
+            completion_status, ..
+        } = event
+        else {
+            panic!("expected tool completion event");
+        };
+        assert_eq!(
+            completion_status,
+            Some(ToolCompletionStatus::Success),
+            "{name}: {content}"
+        );
+    }
+}
+
+#[test]
 fn kernel_deadline_shape_populates_typed_telemetry() {
     let result = crate::tools::ToolResult::text(
         serde_json::json!({
