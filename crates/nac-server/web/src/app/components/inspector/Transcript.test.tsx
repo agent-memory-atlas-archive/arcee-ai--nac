@@ -7,6 +7,10 @@ import { RunFailureNotice, TranscriptRecoveryNotice } from "@/app/components/ins
 import { failureRecoveryAffordance } from "@/app/lib/runFailure";
 import type { RunFailure, SessionGoalRecord } from "@/app/types/api";
 
+function occurrenceCount(text: string | null, value: string): number {
+  return text ? text.split(value).length - 1 : 0;
+}
+
 describe("TranscriptRecoveryNotice", () => {
   it("renders a non-fatal recovery status only when supplied", () => {
     const warning =
@@ -125,6 +129,7 @@ describe("RunFailureNotice", () => {
 
     const status = within(view.container).getByRole("status");
     expect(status.textContent).toContain("The model provider is temporarily unavailable.");
+    expect(occurrenceCount(status.textContent, failure.summary)).toBe(1);
     expect(status.textContent).toContain("NAC will continue automatically at");
     expect(within(view.container).queryByRole("alert")).toBeNull();
     expect(failureRecoveryAffordance(failure, goal, true)).toBeNull();
@@ -149,6 +154,7 @@ describe("RunFailureNotice", () => {
     );
 
     const alert = within(view.container).getByRole("alert");
+    expect(occurrenceCount(alert.textContent, failure.summary)).toBe(1);
     expect(alert.textContent).toContain("Retrying later may be necessary.");
     expect(alert.textContent).toContain("wait at least 1 minute before retrying");
     expect(
@@ -174,5 +180,9 @@ describe("RunFailureNotice", () => {
     const restoredAlert = within(restored.container).getByRole("alert");
     expect(restoredAlert.textContent).toBe(liveAlert.textContent);
     expect(restoredAlert.textContent).toContain("The model provider is temporarily unavailable.");
+    expect(occurrenceCount(liveAlert.textContent, failure.summary)).toBe(1);
+    expect(liveAlert.textContent).toContain(
+      "Resume it when you want another bounded retry sequence.",
+    );
   });
 });

@@ -146,6 +146,14 @@ export function RunFailureNotice({
         second: "2-digit",
       })
     : null;
+  const summaryPrefix = providerCapacity ? "" : `${failure.summary} `;
+  const explanation = retryScheduled
+    ? `${summaryPrefix}The durable goal and its usage were preserved. NAC will continue automatically${retryTime ? ` at ${retryTime}` : ""}.`
+    : retryExhausted
+      ? `${summaryPrefix}The durable goal and its usage were preserved. Resume it when you want another bounded retry sequence.`
+      : providerCapacity
+        ? `Retrying later may be necessary.${providerRetryDelay(failure.retry_after_ms)}`
+        : failure.summary;
   return (
     <ChatSessionMessage
       role={retryScheduled ? "status" : "alert"}
@@ -153,15 +161,7 @@ export function RunFailureNotice({
       title={title}
       action={action}
     >
-      <span>
-        {retryScheduled
-          ? `${failure.summary} The durable goal and its usage were preserved. NAC will continue automatically${retryTime ? ` at ${retryTime}` : ""}.`
-          : retryExhausted
-            ? `${failure.summary} The durable goal and its usage were preserved. Resume it when you want another bounded retry sequence.`
-            : providerCapacity
-              ? `${failure.summary} Retrying later may be necessary.${providerRetryDelay(failure.retry_after_ms)}`
-              : failure.summary}
-      </span>
+      <span>{explanation}</span>
       <details className="mt-2">
         <summary className="cursor-pointer">Diagnostics</summary>
         <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs">
