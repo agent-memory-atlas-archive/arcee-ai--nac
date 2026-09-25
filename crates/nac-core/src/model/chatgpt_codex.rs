@@ -1091,19 +1091,25 @@ async fn post_codex_json_with_retry_delay(
             //
             // Codex often omits Content-Type on streamed responses. `Accept`
             // and `stream: true` make a missing header an SSE response here.
-            let result = if content_type.is_none() || is_event_stream(content_type.as_deref()) {
+            let mut result = if content_type.is_none() || is_event_stream(content_type.as_deref()) {
                 stream_codex_responses(response, url, status, on_delta, &[auth.access.as_str()])
                     .await
             } else {
-                let response_body = read_codex_body(response, url, status).await?;
-                parse_codex_success_body(
-                    url,
-                    status,
-                    content_type.as_deref(),
-                    &response_body,
-                    &[auth.access.as_str()],
-                )
+                read_codex_body(response, url, status)
+                    .await
+                    .and_then(|response_body| {
+                        parse_codex_success_body(
+                            url,
+                            status,
+                            content_type.as_deref(),
+                            &response_body,
+                            &[auth.access.as_str()],
+                        )
+                    })
             };
+            if let Err(error) = &mut result {
+                error.retry_after_ms = retry_after.map(|delay| delay.as_millis() as u64);
+            }
             match result {
                 Ok(value) => return Ok(value),
                 Err(mut error) if error.can_retry_stream() => {
@@ -1113,7 +1119,7 @@ async fn post_codex_json_with_retry_delay(
                         if let Some(on_delta) = on_delta {
                             on_delta(ModelStreamDelta::retry_reset((attempt + 2) as u32));
                         }
-                        sleep(retry_delay(attempt)).await;
+                        sleep(bounded_retry_delay(retry_delay(attempt), retry_after)).await;
                     }
                     continue;
                 }
@@ -1159,7 +1165,7 @@ async fn post_codex_json_with_retry_delay(
                 if let Some(on_delta) = on_delta {
                     on_delta(ModelStreamDelta::retry_reset((attempt + 2) as u32));
                 }
-                let delay = retry_after.unwrap_or_else(|| retry_delay(attempt));
+                let delay = bounded_retry_delay(retry_delay(attempt), retry_after);
                 sleep(delay).await;
             }
             continue;
@@ -1214,9 +1220,13 @@ async fn stream_codex_responses(
             partial_output: error.partial_output(),
             attempt_count: 1,
             retry_after_ms: None,
-            kind: RunFailureKind::Transport,
+            kind: error.kind(),
             phase: RunFailurePhase::Stream,
         })
+}
+
+fn bounded_retry_delay(local_delay: Duration, provider_delay: Option<Duration>) -> Duration {
+    provider_delay.map_or(local_delay, |delay| local_delay.max(delay))
 }
 
 fn parse_codex_success_body(
@@ -1244,11 +1254,7 @@ fn parse_codex_success_body(
                 partial_output: PartialModelOutput::default(),
                 attempt_count: 1,
                 retry_after_ms: None,
-                kind: if error.is_retryable() {
-                    RunFailureKind::Capacity
-                } else {
-                    RunFailureKind::Protocol
-                },
+                kind: error.kind(),
                 phase: RunFailurePhase::Decode,
             }
         });
@@ -1279,7 +1285,7 @@ fn parse_codex_sse_response(response_body: &str) -> std::result::Result<Value, S
         }
 
         let event: Value = serde_json::from_str(&data).map_err(|error| {
-            StreamFoldError::permanent(format!("invalid SSE JSON event: {error}"))
+            StreamFoldError::protocol(format!("invalid SSE JSON event: {error}"))
         })?;
         fold.push(&event)?;
     }

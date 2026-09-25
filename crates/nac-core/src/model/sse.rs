@@ -14,7 +14,7 @@ use std::fmt;
 use std::pin::Pin;
 
 use super::{redact_credentials, redact_credentials_with_extra_headers};
-use crate::run_failure::PartialModelOutput;
+use crate::run_failure::{PartialModelOutput, RunFailureKind};
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
@@ -53,6 +53,7 @@ pub(super) fn with_source_chain(error: &(dyn std::error::Error + 'static)) -> St
 pub(super) struct StreamFoldError {
     message: String,
     retryable: bool,
+    kind: RunFailureKind,
 }
 
 impl StreamFoldError {
@@ -60,6 +61,7 @@ impl StreamFoldError {
         Self {
             message: message.into(),
             retryable: false,
+            kind: RunFailureKind::Validation,
         }
     }
 
@@ -67,11 +69,32 @@ impl StreamFoldError {
         Self {
             message: message.into(),
             retryable: true,
+            kind: RunFailureKind::Protocol,
+        }
+    }
+
+    pub(super) fn capacity(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+            kind: RunFailureKind::Capacity,
+        }
+    }
+
+    pub(super) fn protocol(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: false,
+            kind: RunFailureKind::Protocol,
         }
     }
 
     pub(super) fn is_retryable(&self) -> bool {
         self.retryable
+    }
+
+    pub(super) fn kind(&self) -> RunFailureKind {
+        self.kind
     }
 }
 
@@ -93,7 +116,7 @@ pub(super) fn provider_stream_error(code: Option<&str>, message: &str) -> Stream
     // top of this before the message is persisted.
     let message = redact_credentials(message, &[]);
     if retryable {
-        StreamFoldError::retryable(message)
+        StreamFoldError::capacity(message)
     } else {
         StreamFoldError::permanent(message)
     }
@@ -122,6 +145,7 @@ impl std::error::Error for StreamFoldError {}
 pub(super) struct SseError {
     message: String,
     retryable: bool,
+    kind: RunFailureKind,
     observable_delta: bool,
     partial_output: PartialModelOutput,
 }
@@ -135,6 +159,7 @@ impl SseError {
         Self {
             message: message.into(),
             retryable: false,
+            kind: RunFailureKind::Protocol,
             observable_delta,
             partial_output,
         }
@@ -158,6 +183,7 @@ impl SseError {
                 redact_credentials(url, &[])
             ),
             retryable: error.retryable,
+            kind: error.kind,
             observable_delta,
             partial_output,
         }
@@ -171,6 +197,7 @@ impl SseError {
         Self {
             message: message.into(),
             retryable: true,
+            kind: RunFailureKind::Transport,
             observable_delta,
             partial_output,
         }
@@ -186,6 +213,10 @@ impl SseError {
 
     pub(super) fn partial_output(&self) -> PartialModelOutput {
         self.partial_output
+    }
+
+    pub(super) fn kind(&self) -> RunFailureKind {
+        self.kind
     }
 }
 
@@ -552,10 +583,16 @@ mod tests {
 
     #[test]
     fn classifies_only_known_transient_provider_stream_errors() {
-        assert!(provider_stream_error(Some("overloaded_error"), "busy").is_retryable());
-        assert!(provider_stream_error(Some("server_error"), "failed").is_retryable());
-        assert!(!provider_stream_error(Some("insufficient_quota"), "quota").is_retryable());
-        assert!(!provider_stream_error(None, "failed").is_retryable());
+        for code in ["overloaded_error", "server_error", "rate_limit_exceeded"] {
+            let error = provider_stream_error(Some(code), "busy");
+            assert!(error.is_retryable());
+            assert_eq!(error.kind(), RunFailureKind::Capacity);
+        }
+        for code in [Some("insufficient_quota"), None] {
+            let error = provider_stream_error(code, "failed");
+            assert!(!error.is_retryable());
+            assert_eq!(error.kind(), RunFailureKind::Validation);
+        }
     }
 
     /// A provider error that echoes the request's API key back in prose must

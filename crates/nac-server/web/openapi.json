@@ -7526,6 +7526,14 @@
               "call_id": {
                 "type": "string"
               },
+              "cleanup_duration_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "minimum": 0
+              },
               "command_status": {
                 "oneOf": [
                   {
@@ -7536,8 +7544,34 @@
                   }
                 ]
               },
+              "completion_status": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ToolCompletionStatus"
+                  }
+                ]
+              },
               "content_preview": {
                 "type": "string"
+              },
+              "effective_timeout_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "minimum": 0
+              },
+              "execution_duration_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "minimum": 0
               },
               "exit_code": {
                 "type": [
@@ -7551,6 +7585,9 @@
               },
               "name": {
                 "type": "string"
+              },
+              "remote_outcome_uncertain": {
+                "type": "boolean"
               },
               "thread_name": {
                 "type": [
@@ -13991,6 +14028,15 @@
             "type": "string"
           }
         }
+      },
+      "ToolCompletionStatus": {
+        "type": "string",
+        "enum": [
+          "success",
+          "error",
+          "timed_out",
+          "cancelled"
+        ]
       },
       "ToolContentPartSchema": {
         "oneOf": [

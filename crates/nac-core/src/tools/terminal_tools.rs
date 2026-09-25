@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::time::Duration;
 
 use super::{exec_command, kernel, shared_workspace_gate, ToolResult, ToolRuntime};
 use crate::types::ToolDefinition;
@@ -16,6 +17,19 @@ impl kernel::NativeTool for ExecCommandTool {
 
     fn admission(&self) -> kernel::ToolAdmission {
         kernel::ToolAdmission::Exclusive
+    }
+
+    fn timeout(
+        &self,
+        input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<kernel::ToolTimeout, ToolResult> {
+        let default_ms = if input.get("tty").and_then(Value::as_bool).unwrap_or(false) {
+            500
+        } else {
+            30_000
+        };
+        delegated_yield_timeout(input, requested, default_ms)
     }
 
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
@@ -44,12 +58,23 @@ impl kernel::NativeTool for ExecCommandTool {
         &'a self,
         input: Self::Input,
         services: kernel::ToolServices<'a>,
-        _context: &'a kernel::ToolCallContext,
+        context: &'a kernel::ToolCallContext,
     ) -> futures_util::future::BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let gate = shared_workspace_gate(services.runtime);
-            let _write = gate.write().await;
-            exec_command::execute_exec_command(&input, services.runtime).await
+            let cancellation = context.cancellation(services.runtime);
+            let _write = tokio::select! {
+                guard = gate.write() => guard,
+                () = cancellation.cancelled() => {
+                    return ToolResult::text("Error: command cancelled before workspace admission", true);
+                }
+            };
+            exec_command::execute_exec_command_with_cancellation(
+                &input,
+                services.runtime,
+                cancellation,
+            )
+            .await
         })
     }
 }
@@ -96,6 +121,14 @@ impl kernel::NativeTool for WriteStdinTool {
         kernel::ToolAdmission::Exclusive
     }
 
+    fn timeout(
+        &self,
+        input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<kernel::ToolTimeout, ToolResult> {
+        delegated_yield_timeout(input, requested, 500)
+    }
+
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult> {
         validate_write_stdin(&input)?;
         Ok(input)
@@ -113,14 +146,52 @@ impl kernel::NativeTool for WriteStdinTool {
         &'a self,
         input: Self::Input,
         services: kernel::ToolServices<'a>,
-        _context: &'a kernel::ToolCallContext,
+        context: &'a kernel::ToolCallContext,
     ) -> futures_util::future::BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let gate = shared_workspace_gate(services.runtime);
-            let _write = gate.write().await;
-            exec_command::execute_write_stdin(&input, services.runtime).await
+            let cancellation = context.cancellation(services.runtime);
+            let _write = tokio::select! {
+                guard = gate.write() => guard,
+                () = cancellation.cancelled() => {
+                    return ToolResult::text("Error: terminal input cancelled before workspace admission", true);
+                }
+            };
+            exec_command::execute_write_stdin_with_cancellation(
+                &input,
+                services.runtime,
+                cancellation,
+            )
+            .await
         })
     }
+}
+
+fn delegated_yield_timeout(
+    input: &mut Value,
+    requested: Option<Duration>,
+    default_ms: u64,
+) -> Result<kernel::ToolTimeout, ToolResult> {
+    let object = input
+        .as_object_mut()
+        .ok_or_else(|| invalid("tool arguments must be an object"))?;
+    let existing_value = object.get("yield_time_ms");
+    let existing = existing_value.and_then(Value::as_u64);
+    let requested_ms = requested.map(|duration| duration.as_millis() as u64);
+    if existing.is_some() && requested_ms.is_some() && existing != requested_ms {
+        return Err(invalid(
+            "'_nac.timeout_ms' conflicts with the existing 'yield_time_ms' argument",
+        ));
+    }
+    let effective_ms = requested_ms.or(existing).unwrap_or(default_ms);
+    if existing_value.is_none() && requested.is_some() {
+        object.insert("yield_time_ms".to_string(), Value::from(effective_ms));
+    }
+    Ok(kernel::ToolTimeout {
+        duration: Duration::from_millis(effective_ms),
+        disposition: kernel::ToolTimeoutDisposition::Delegated,
+        remote_outcome_uncertain: false,
+    })
 }
 
 impl kernel::NativeTool for ReadCommandOutputTool {

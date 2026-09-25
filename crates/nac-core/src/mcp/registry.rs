@@ -226,7 +226,27 @@ impl McpRegistry {
             });
             for tool in listed_tools {
                 let qualified_name = allocate_tool_name(&server_name, &tool.name, &mut seen_names);
-                let definition = tool_definition(&qualified_name, &server_name, &tool);
+                let mut definition = tool_definition(&qualified_name, &server_name, &tool);
+                if definition.function.parameters["properties"]
+                    .as_object()
+                    .is_some_and(|properties| properties.contains_key("_nac"))
+                {
+                    skipped.push(McpSkippedServer {
+                        name: qualified_name.clone(),
+                        reason: "tool capability skipped: input schema already defines reserved property '_nac'"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                if let Err(reason) = crate::tools::kernel::decorate_timeout_schema(
+                    &mut definition.function.parameters,
+                ) {
+                    skipped.push(McpSkippedServer {
+                        name: qualified_name.clone(),
+                        reason: format!("tool capability skipped: {reason}"),
+                    });
+                    continue;
+                }
                 tools.insert(
                     qualified_name,
                     Arc::new(McpToolBinding {
@@ -288,24 +308,10 @@ impl McpRegistry {
         if let Some(arguments) = arguments {
             params = params.with_arguments(arguments);
         }
-        match timeout(
-            MCP_TOOL_CALL_TIMEOUT,
-            binding.server._service.call_tool(params),
-        )
-        .await
-        {
-            Ok(Ok(result)) => flatten_tool_result(result, image_results).await,
-            Ok(Err(error)) => ToolResult {
+        match binding.server._service.call_tool(params).await {
+            Ok(result) => flatten_tool_result(result, image_results).await,
+            Err(error) => ToolResult {
                 content: format!("Error calling MCP tool '{name}': {error}").into(),
-                is_error: true,
-            },
-            Err(_) => ToolResult {
-                content: format!(
-                    "Error calling MCP tool '{}': timed out after {}s",
-                    name,
-                    MCP_TOOL_CALL_TIMEOUT.as_secs()
-                )
-                .into(),
                 is_error: true,
             },
         }

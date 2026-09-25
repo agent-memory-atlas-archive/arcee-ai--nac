@@ -416,7 +416,43 @@ fn exec_command_finished_event_carries_structured_outcome() {
         AgentEvent::ToolCallFinished {
             command_status: Some(crate::terminal::CommandStatus::Completed),
             exit_code: Some(7),
+            completion_status: Some(crate::events::ToolCompletionStatus::Error),
             is_error: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn generic_deadline_finished_event_carries_typed_timing_metadata() {
+    let result = ToolResult::text(
+        serde_json::json!({
+            "error":"Tool 'read' timed_out after 12 ms",
+            "_nac": {
+                "status":"timed_out",
+                "timeout_ms":10,
+                "execution_duration_ms":12,
+                "cleanup_duration_ms":2,
+                "remote_outcome_uncertain":true
+            }
+        })
+        .to_string(),
+        true,
+    );
+    let event = AgentEvent::tool_call_finished(
+        None,
+        "call-deadline".to_string(),
+        "read".to_string(),
+        &result,
+    );
+    assert!(matches!(
+        event,
+        AgentEvent::ToolCallFinished {
+            completion_status: Some(crate::events::ToolCompletionStatus::TimedOut),
+            effective_timeout_ms: Some(10),
+            execution_duration_ms: Some(12),
+            cleanup_duration_ms: Some(2),
+            remote_outcome_uncertain: true,
             ..
         }
     ));
@@ -833,7 +869,7 @@ fn image_limit_error_is_the_only_finished_event_for_the_result() {
 }
 
 #[tokio::test]
-async fn cancelled_image_result_still_emits_finished_event() {
+async fn cancelled_image_call_still_emits_one_typed_finished_event() {
     use crate::model::test_http::{ScriptedResponse, ScriptedServer};
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use std::io::Cursor;
@@ -899,14 +935,19 @@ async fn cancelled_image_result_still_emits_finished_event() {
             AgentEvent::ToolCallFinished {
                 call_id,
                 content_preview,
+                completion_status,
                 ..
-            } => Some((call_id, content_preview)),
+            } => Some((call_id, content_preview, completion_status)),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(finished.len(), 1);
     assert_eq!(finished[0].0, "call-image");
-    assert!(finished[0].1.contains("[image: image/png,"));
+    assert!(finished[0].1.contains("cancelled"));
+    assert_eq!(
+        finished[0].2,
+        Some(crate::events::ToolCompletionStatus::Cancelled)
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }

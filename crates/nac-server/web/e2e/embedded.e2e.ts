@@ -250,6 +250,50 @@ for (const behavior of ["direct", "direct-with-orchestrator"] as const) {
   });
 }
 
+test("renders a per-call command deadline distinctly through settlement and reload", async ({
+  harness,
+  page,
+  request,
+}) => {
+  const callId = "all103-command-deadline";
+  harness.provider.enqueue(
+    "all103-tool-call",
+    { token: "ALL103_DEADLINE_TOKEN", requiredTools: ["exec_command"] },
+    {
+      kind: "function_call",
+      name: "exec_command",
+      callId,
+      arguments: { cmd: "sleep 30", _nac: { timeout_ms: 20 } },
+      stream: true,
+    },
+  );
+  harness.provider.enqueue(
+    "all103-tool-finished",
+    { functionOutputCallId: callId },
+    { kind: "text", text: "deadline observed", stream: true },
+  );
+
+  const sessionId = await createDirectSession(request, harness);
+  await page.goto(`${harness.baseUrl}/#/session/${sessionId}/delegated`);
+  await page.getByRole("combobox", { name: "Message" }).fill("ALL103_DEADLINE_TOKEN");
+  await page.getByRole("button", { name: "Send" }).click();
+  await harness.provider.waitForRequestCount(1);
+
+  const card = page.locator(`[data-tool-call-id="${callId}"]`);
+  await expect(card).toContainText("Awaiting approval");
+  await page.getByRole("button", { name: "Allow once" }).click();
+  await harness.provider.waitForRequestCount(2);
+  await waitForRunIdle(request, harness, sessionId);
+  await expect(card).toContainText("Timed out");
+  await expect(page.getByText("deadline observed")).toBeVisible();
+
+  await page.reload();
+  const reloaded = page.locator(`[data-tool-call-id="${callId}"]`);
+  await expect(reloaded).toContainText("Timed out");
+  await expect(reloaded).toHaveCount(1);
+  harness.provider.assertConsumed();
+});
+
 test("keeps approval state and actions reachable with many remembered permissions", async ({
   harness,
   page,

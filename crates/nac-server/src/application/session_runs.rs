@@ -30,6 +30,12 @@ pub(crate) struct ThreadSteering {
     pub(crate) instruction_preview: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactCancelOutcome {
+    CancelledOrInactive,
+    ActiveRunMismatch,
+}
+
 pub(crate) type EventSubscription = (
     String,
     u64,
@@ -242,18 +248,29 @@ impl<'a> SessionRunApplication<'a> {
     }
 
     pub(crate) async fn cancel_exact(&self, session_id: &str, expected_run_id: &str) -> Result<()> {
+        self.manager.require_primary_operation_session(session_id)?;
+        let _ = self
+            .cancel_exact_unchecked(session_id, expected_run_id)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn cancel_exact_unchecked(
+        &self,
+        session_id: &str,
+        expected_run_id: &str,
+    ) -> Result<ExactCancelOutcome> {
         const MAX_RUN_ID_BYTES: usize = 128;
         if expected_run_id.is_empty() || expected_run_id.len() > MAX_RUN_ID_BYTES {
             return Err(anyhow!("run_id is invalid"));
         }
-        self.manager.require_primary_operation_session(session_id)?;
         let service = self.manager.attach_session(session_id).await?;
         let Some(active) = service.active_run() else {
             return match sessions::SessionOperationLease::try_acquire(
                 &self.manager.inner.store_path,
                 session_id,
             ) {
-                Ok(_idle) => Ok(()),
+                Ok(_idle) => Ok(ExactCancelOutcome::CancelledOrInactive),
                 Err(sessions::SessionOperationLeaseError::Busy(_)) => Err(anyhow!(
                     "session '{session_id}' is running in another process and cannot be cancelled from this process"
                 )),
@@ -261,14 +278,16 @@ impl<'a> SessionRunApplication<'a> {
             };
         };
         if active.run_id.as_str() != expected_run_id {
-            return Ok(());
+            return Ok(ExactCancelOutcome::ActiveRunMismatch);
         }
         match service
             .connect_client()
             .request_cancel(&active.run_id)
             .await
         {
-            Ok(()) | Err(SessionCancelError::NotActive { .. }) => Ok(()),
+            Ok(()) | Err(SessionCancelError::NotActive { .. }) => {
+                Ok(ExactCancelOutcome::CancelledOrInactive)
+            }
             Err(SessionCancelError::Cleanup { message, .. }) => Err(anyhow!(message)),
         }
     }

@@ -42,6 +42,7 @@ pub trait TraditionalChildController: Send + Sync + 'static {
         &'a self,
         parent_session_id: &'a str,
         child_session_id: &'a str,
+        expected_generation: u64,
     ) -> ChildFuture<'a, TraditionalChildRecord>;
 
     fn wake<'a>(&'a self, session_id: &'a str) -> ChildFuture<'a, ()>;

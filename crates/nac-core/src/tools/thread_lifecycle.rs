@@ -10,9 +10,19 @@ struct ThreadCancellationState {
 #[derive(Clone, Default)]
 pub(crate) struct ThreadCancellation {
     state: Arc<ThreadCancellationState>,
+    parent: Option<Arc<ThreadCancellation>>,
 }
 
 impl ThreadCancellation {
+    /// Create a cancellation domain that can be stopped independently while
+    /// still observing the owning run's stop signal.
+    pub(crate) fn child(&self) -> Self {
+        Self {
+            state: Arc::new(ThreadCancellationState::default()),
+            parent: Some(Arc::new(self.clone())),
+        }
+    }
+
     pub(crate) fn cancel(&self) {
         // Synchronous process creation and terminal writes take this same
         // short-lived gate for their final check plus mutation. Whichever side
@@ -30,15 +40,34 @@ impl ThreadCancellation {
 
     pub(crate) fn is_cancelled(&self) -> bool {
         self.state.cancelled.load(Ordering::Acquire)
+            || self
+                .parent
+                .as_deref()
+                .is_some_and(ThreadCancellation::is_cancelled)
     }
 
     pub(crate) fn run_if_active<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
-        let _mutation = self
-            .state
-            .mutation_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (!self.is_cancelled()).then(operation)
+        let mut lineage = Vec::new();
+        let mut current = Some(self);
+        while let Some(cancellation) = current {
+            lineage.push(cancellation);
+            current = cancellation.parent.as_deref();
+        }
+        let _guards = lineage
+            .iter()
+            .rev()
+            .map(|cancellation| {
+                cancellation
+                    .state
+                    .mutation_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+            .collect::<Vec<_>>();
+        (!lineage
+            .iter()
+            .any(|cancellation| cancellation.state.cancelled.load(Ordering::Acquire)))
+        .then(operation)
     }
 
     pub(crate) async fn cancelled(&self) {
@@ -47,7 +76,14 @@ impl ThreadCancellation {
             if self.is_cancelled() {
                 return;
             }
-            notified.await;
+            if let Some(parent) = self.parent.as_deref() {
+                tokio::select! {
+                    () = notified => {}
+                    () = Box::pin(parent.cancelled()) => {}
+                }
+            } else {
+                notified.await;
+            }
         }
     }
 }
@@ -284,6 +320,28 @@ impl ActiveThreadRegistry {
 #[cfg(test)]
 mod active_thread_registry_tests {
     use super::*;
+
+    #[test]
+    fn child_cancellation_is_local_and_parent_cancellation_propagates() {
+        let parent = ThreadCancellation::default();
+        let first = parent.child();
+        let second = parent.child();
+        first.cancel();
+        assert!(first.is_cancelled());
+        assert!(!parent.is_cancelled());
+        assert!(!second.is_cancelled());
+        parent.cancel();
+        assert!(second.is_cancelled());
+    }
+
+    #[test]
+    fn parent_and_child_share_the_final_synchronous_admission_gate() {
+        let parent = ThreadCancellation::default();
+        let child = parent.child();
+        assert_eq!(child.run_if_active(|| 7), Some(7));
+        parent.cancel();
+        assert_eq!(child.run_if_active(|| 9), None);
+    }
 
     #[tokio::test]
     async fn cancellation_drains_running_dispatches_and_rejects_pending_work() {

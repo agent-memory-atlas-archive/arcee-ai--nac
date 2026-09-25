@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
@@ -10,7 +11,10 @@ use crate::store::{
 };
 use crate::types::{FunctionDef, ToolDefinition};
 
-use super::kernel::{NativeTool, PermissionResource, ToolAdmission, ToolCallContext, ToolServices};
+use super::kernel::{
+    NativeTool, PermissionResource, ToolAdmission, ToolCallContext, ToolServices, ToolTimeout,
+    ToolTimeoutDisposition,
+};
 use super::ToolResult;
 
 #[derive(Deserialize)]
@@ -146,6 +150,28 @@ impl NativeTool for LaunchTool {
         ToolAdmission::Parallel
     }
 
+    fn timeout(
+        &self,
+        input: &mut serde_json::Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        let background = input
+            .get("background")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(ToolTimeout {
+            duration: requested.unwrap_or(if background {
+                super::kernel::DEFAULT_TOOL_TIMEOUT
+            } else {
+                super::kernel::MAX_TOOL_TIMEOUT
+            }),
+            // Admission is a durable mutation: once a generation is accepted,
+            // its canonical running record must win a simultaneous deadline.
+            disposition: ToolTimeoutDisposition::Settle,
+            remote_outcome_uncertain: false,
+        })
+    }
+
     fn decode(&self, input: serde_json::Value) -> Result<Self::Input, ToolResult> {
         decode("orchestrator_launch", input)
     }
@@ -165,7 +191,7 @@ impl NativeTool for LaunchTool {
         &'a self,
         input: Self::Input,
         services: ToolServices<'a>,
-        _context: &'a ToolCallContext,
+        context: &'a ToolCallContext,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let (parent, controller) = match controller(services) {
@@ -205,12 +231,15 @@ impl NativeTool for LaunchTool {
             let session_id = started.orchestrator_session_id.clone();
             let outcome = tokio::select! {
                 outcome = controller.wait(&session_id, started.generation) => outcome,
-                _ = services.runtime.command_cancellation.cancelled() => {
+                _ = context.cancellation(services.runtime).cancelled() => {
                     let cancel_controller = Arc::clone(&controller);
                     let cancel_parent = parent.clone();
                     let cancel_session = session_id.clone();
+                    let generation = started.generation;
                     let cancellation = tokio::spawn(async move {
-                        cancel_controller.cancel(&cancel_parent, &cancel_session).await
+                        cancel_controller
+                            .cancel(&cancel_parent, &cancel_session, generation)
+                            .await
                     });
                     match cancellation.await {
                         Ok(Ok(cancelled)) => Ok(cancelled),
@@ -298,6 +327,17 @@ impl NativeTool for SteerTool {
     }
     fn admission(&self) -> ToolAdmission {
         ToolAdmission::Parallel
+    }
+    fn timeout(
+        &self,
+        _input: &mut serde_json::Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout {
+            duration: requested.unwrap_or(super::kernel::DEFAULT_TOOL_TIMEOUT),
+            disposition: ToolTimeoutDisposition::Settle,
+            remote_outcome_uncertain: false,
+        })
     }
     fn decode(&self, input: serde_json::Value) -> Result<Self::Input, ToolResult> {
         decode("orchestrator_steer", input)
@@ -406,6 +446,13 @@ macro_rules! session_control_tool {
             type Input = SessionInput;
             fn definition(&self) -> ToolDefinition { definition($name, $description, json!({"orchestrator_session_id":{"type":"string","minLength":1}}), &["orchestrator_session_id"]) }
             fn admission(&self) -> ToolAdmission { ToolAdmission::Exclusive }
+            fn timeout(&self, _input: &mut serde_json::Value, requested: Option<Duration>) -> Result<ToolTimeout, ToolResult> {
+                Ok(ToolTimeout {
+                    duration: requested.unwrap_or(super::kernel::DEFAULT_TOOL_TIMEOUT),
+                    disposition: ToolTimeoutDisposition::Settle,
+                    remote_outcome_uncertain: false,
+                })
+            }
             fn decode(&self, input: serde_json::Value) -> Result<Self::Input, ToolResult> { decode($name, input) }
             fn permission_resources(&self, input: &Self::Input, _services: ToolServices<'_>) -> Result<Vec<PermissionResource>, ToolResult> { Ok(vec![PermissionResource::new($action, &input.orchestrator_session_id)]) }
             fn execute<'a>(&'a self, input: Self::Input, services: ToolServices<'a>, _context: &'a ToolCallContext) -> BoxFuture<'a, ToolResult> { Box::pin(async move { $body(input, services).await }) }
@@ -436,11 +483,12 @@ async fn cancel(input: SessionInput, services: ToolServices<'_>) -> ToolResult {
         Ok(value) => value,
         Err(error) => return error,
     };
-    if let Err(error) = owned(services.runtime, &parent, &input.orchestrator_session_id) {
-        return ToolResult::text(format!("Error: {error:#}"), true);
-    }
+    let record = match owned(services.runtime, &parent, &input.orchestrator_session_id) {
+        Ok(record) => record,
+        Err(error) => return ToolResult::text(format!("Error: {error:#}"), true),
+    };
     match controller
-        .cancel(&parent, &input.orchestrator_session_id)
+        .cancel(&parent, &input.orchestrator_session_id, record.generation)
         .await
     {
         Ok(record) => record_result(record),
@@ -449,19 +497,63 @@ async fn cancel(input: SessionInput, services: ToolServices<'_>) -> ToolResult {
 }
 
 session_control_tool!(
-    WaitTool,
-    "orchestrator_wait",
-    "Wait for the active generation of a managed orchestrator and return its durable outcome.",
-    "orchestrator_read",
-    wait
-);
-session_control_tool!(
     CancelTool,
     "orchestrator_cancel",
     "Cancel the active generation of a managed orchestrator.",
     "orchestrator_cancel",
     cancel
 );
+
+impl NativeTool for WaitTool {
+    type Input = SessionInput;
+
+    fn definition(&self) -> ToolDefinition {
+        definition(
+            "orchestrator_wait",
+            "Wait for the active generation of a managed orchestrator and return its durable outcome.",
+            json!({"orchestrator_session_id":{"type":"string","minLength":1}}),
+            &["orchestrator_session_id"],
+        )
+    }
+
+    fn admission(&self) -> ToolAdmission {
+        ToolAdmission::Exclusive
+    }
+
+    fn timeout(
+        &self,
+        _input: &mut serde_json::Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout::bounded(
+            requested.unwrap_or(super::kernel::MAX_TOOL_TIMEOUT),
+        ))
+    }
+
+    fn decode(&self, input: serde_json::Value) -> Result<Self::Input, ToolResult> {
+        decode("orchestrator_wait", input)
+    }
+
+    fn permission_resources(
+        &self,
+        input: &Self::Input,
+        _services: ToolServices<'_>,
+    ) -> Result<Vec<PermissionResource>, ToolResult> {
+        Ok(vec![PermissionResource::new(
+            "orchestrator_read",
+            &input.orchestrator_session_id,
+        )])
+    }
+
+    fn execute<'a>(
+        &'a self,
+        input: Self::Input,
+        services: ToolServices<'a>,
+        _context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, ToolResult> {
+        Box::pin(async move { wait(input, services).await })
+    }
+}
 
 fn owned(
     runtime: &super::ToolRuntime,
@@ -474,7 +566,7 @@ fn owned(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -482,8 +574,10 @@ mod tests {
 
     struct FakeController {
         starts: Mutex<Vec<ManagedOrchestratorStartRequest>>,
+        start_delay_ms: AtomicU64,
         block_wait: AtomicBool,
         cancels: AtomicUsize,
+        cancelled_generation: AtomicU64,
     }
 
     fn record(
@@ -517,7 +611,11 @@ mod tests {
         ) -> OrchestrationFuture<'a, ManagedOrchestratorRecord> {
             let mode = request.execution_mode;
             self.starts.lock().unwrap().push(request);
-            Box::pin(async move { Ok(record(ManagedOrchestratorStatus::Running, mode)) })
+            let start_delay_ms = self.start_delay_ms.load(Ordering::SeqCst);
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(start_delay_ms)).await;
+                Ok(record(ManagedOrchestratorStatus::Running, mode))
+            })
         }
 
         fn wait<'a>(
@@ -565,8 +663,11 @@ mod tests {
             &'a self,
             _parent_session_id: &'a str,
             _orchestrator_session_id: &'a str,
+            expected_generation: u64,
         ) -> OrchestrationFuture<'a, ManagedOrchestratorRecord> {
             self.cancels.fetch_add(1, Ordering::SeqCst);
+            self.cancelled_generation
+                .store(expected_generation, Ordering::SeqCst);
             Box::pin(async {
                 Ok(record(
                     ManagedOrchestratorStatus::Cancelled,
@@ -588,8 +689,10 @@ mod tests {
         ));
         let controller = Arc::new(FakeController {
             starts: Mutex::new(Vec::new()),
+            start_delay_ms: AtomicU64::new(0),
             block_wait: AtomicBool::new(false),
             cancels: AtomicUsize::new(0),
+            cancelled_generation: AtomicU64::new(0),
         });
         crate::orchestration_control::register_controller(store_path.clone(), controller.clone());
         let mut runtime = crate::tools::test_runtime();
@@ -662,8 +765,10 @@ mod tests {
         ));
         let controller = Arc::new(FakeController {
             starts: Mutex::new(Vec::new()),
+            start_delay_ms: AtomicU64::new(0),
             block_wait: AtomicBool::new(true),
             cancels: AtomicUsize::new(0),
+            cancelled_generation: AtomicU64::new(0),
         });
         crate::orchestration_control::register_controller(store_path.clone(), controller.clone());
         let mut runtime = crate::tools::test_runtime();
@@ -702,6 +807,100 @@ mod tests {
             serde_json::from_str(result.content.as_text().unwrap()).unwrap();
         assert_eq!(record.status, ManagedOrchestratorStatus::Cancelled);
         assert_eq!(controller.cancels.load(Ordering::SeqCst), 1);
+        assert_eq!(controller.cancelled_generation.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn per_call_deadline_cancels_and_settles_foreground_orchestrator_generation() {
+        let store_path = std::env::temp_dir().join(format!(
+            "nac_orchestrator_deadline_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let controller = Arc::new(FakeController {
+            starts: Mutex::new(Vec::new()),
+            start_delay_ms: AtomicU64::new(0),
+            block_wait: AtomicBool::new(true),
+            cancels: AtomicUsize::new(0),
+            cancelled_generation: AtomicU64::new(0),
+        });
+        crate::orchestration_control::register_controller(store_path.clone(), controller.clone());
+        let mut runtime = crate::tools::test_runtime();
+        runtime.store_path = store_path;
+        runtime.session_id = Some("parent-1".to_string());
+        runtime.allowed_tools = Some(Arc::new(
+            crate::tools::DIRECT_WITH_ORCHESTRATOR_TOOL_NAMES
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ));
+
+        let result = crate::tools::execute_tool(
+            "orchestrator_launch",
+            json!({
+                "description":"deadline test",
+                "prompt":"wait until cancelled",
+                "background":false,
+                "_nac":{"timeout_ms":5}
+            }),
+            &runtime,
+            &crate::model::ModelClient::new_for_test(),
+        )
+        .await;
+
+        assert!(result.is_error);
+        let value: serde_json::Value =
+            serde_json::from_str(result.content.as_text().unwrap()).unwrap();
+        assert_eq!(value["_nac"]["status"], "timed_out");
+        assert_eq!(controller.cancels.load(Ordering::SeqCst), 1);
+        assert_eq!(controller.cancelled_generation.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_background_admission_wins_its_deadline_race() {
+        let store_path = std::env::temp_dir().join(format!(
+            "nac_orchestrator_background_deadline_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let controller = Arc::new(FakeController {
+            starts: Mutex::new(Vec::new()),
+            start_delay_ms: AtomicU64::new(20),
+            block_wait: AtomicBool::new(false),
+            cancels: AtomicUsize::new(0),
+            cancelled_generation: AtomicU64::new(0),
+        });
+        crate::orchestration_control::register_controller(store_path.clone(), controller.clone());
+        let mut runtime = crate::tools::test_runtime();
+        runtime.store_path = store_path;
+        runtime.session_id = Some("parent-1".to_string());
+        runtime.allowed_tools = Some(Arc::new(
+            crate::tools::DIRECT_WITH_ORCHESTRATOR_TOOL_NAMES
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ));
+
+        let result = crate::tools::execute_tool(
+            "orchestrator_launch",
+            json!({
+                "description":"deadline test",
+                "prompt":"accept in background",
+                "background":true,
+                "_nac":{"timeout_ms":5}
+            }),
+            &runtime,
+            &crate::model::ModelClient::new_for_test(),
+        )
+        .await;
+
+        assert!(
+            !result.is_error,
+            "accepted admission must be reported truthfully"
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(result.content.as_text().unwrap()).unwrap();
+        assert_eq!(value["status"], "running");
+        assert!(value.get("_nac").is_none());
+        assert_eq!(controller.cancels.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -735,8 +934,10 @@ mod tests {
         .unwrap();
         let controller = Arc::new(FakeController {
             starts: Mutex::new(Vec::new()),
+            start_delay_ms: AtomicU64::new(0),
             block_wait: AtomicBool::new(false),
             cancels: AtomicUsize::new(0),
+            cancelled_generation: AtomicU64::new(0),
         });
         crate::orchestration_control::register_controller(store_path.clone(), controller.clone());
         let mut runtime = crate::tools::test_runtime();
@@ -781,6 +982,28 @@ mod tests {
             );
         }
         assert_eq!(controller.cancels.load(Ordering::SeqCst), 0);
+
+        runtime.session_id = Some("parent-a".to_string());
+        controller.block_wait.store(true, Ordering::SeqCst);
+        let timed_out_wait = crate::tools::execute_tool(
+            "orchestrator_wait",
+            json!({
+                "orchestrator_session_id":"orchestrator-a",
+                "_nac":{"timeout_ms":5}
+            }),
+            &runtime,
+            &client,
+        )
+        .await;
+        assert!(timed_out_wait.is_error);
+        let value: serde_json::Value =
+            serde_json::from_str(timed_out_wait.content.as_text().unwrap()).unwrap();
+        assert_eq!(value["_nac"]["status"], "timed_out");
+        assert_eq!(
+            controller.cancels.load(Ordering::SeqCst),
+            0,
+            "a wait-only deadline must not cancel the target generation"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

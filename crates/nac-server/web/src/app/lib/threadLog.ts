@@ -35,8 +35,12 @@ const TIMED_OUT_PREVIEW = "Command timed out after";
 export function toolCallFailed(event: {
   is_error: boolean;
   content_preview: string;
+  completion_status?: "success" | "error" | "timed_out" | "cancelled" | null;
   command_status?: "completed" | "timed_out" | "cancelled" | "spawn_error" | null;
 }): boolean {
+  if (event.completion_status != null) {
+    return event.completion_status !== "success";
+  }
   if (event.command_status != null) {
     return event.is_error || event.command_status !== "completed";
   }
@@ -70,7 +74,14 @@ export function threadLogLine(event: AgentEvent, seq: number): ThreadLogLine | n
     }
     case "tool_call_finished": {
       const failed = toolCallFailed(event);
-      const mark = failed ? "✕" : "✓";
+      const mark =
+        event.completion_status === "timed_out"
+          ? "◷"
+          : event.completion_status === "cancelled"
+            ? "■"
+            : failed
+              ? "✕"
+              : "✓";
       return {
         key: `result-${event.call_id}`,
         text: `${mark} ${event.name}: ${event.content_preview}`,

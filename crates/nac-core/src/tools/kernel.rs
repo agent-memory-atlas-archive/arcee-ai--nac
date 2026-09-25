@@ -9,6 +9,7 @@ use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures_util::future::BoxFuture;
 use serde_json::Value;
@@ -16,6 +17,9 @@ use serde_json::Value;
 use crate::model::ModelClient;
 use crate::types::ToolDefinition;
 
+use super::deadline::strip_timeout_envelope;
+pub(crate) use super::deadline::{decorate_timeout_schema, DEFAULT_TOOL_TIMEOUT, MAX_TOOL_TIMEOUT};
+pub use super::deadline::{ToolTimeout, ToolTimeoutDisposition};
 use super::{ToolResult, ToolRuntime};
 
 /// Scheduling admission declared by a tool implementation.
@@ -93,10 +97,22 @@ impl PermissionResource {
 }
 
 /// Thin identity and progress context for one model-visible call.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct ToolCallContext {
     pub call_id: Option<String>,
     pub thread_name: Option<String>,
+    pub(crate) cancellation: Option<super::ThreadCancellation>,
+}
+
+impl ToolCallContext {
+    pub(crate) fn cancellation<'a>(
+        &'a self,
+        runtime: &'a ToolRuntime,
+    ) -> &'a super::ThreadCancellation {
+        self.cancellation
+            .as_ref()
+            .unwrap_or(&runtime.command_cancellation)
+    }
 }
 
 /// Runtime services are separate from per-call identity so native operations
@@ -115,6 +131,19 @@ pub trait NativeTool: Send + Sync + 'static {
     fn definition(&self) -> ToolDefinition;
 
     fn admission(&self) -> ToolAdmission;
+
+    /// Resolve the single effective execution budget after the `_nac`
+    /// envelope is stripped and before native decoding. Implementations may
+    /// reconcile an existing protocol-specific timeout alias in `input`.
+    fn timeout(
+        &self,
+        _input: &mut Value,
+        requested: Option<Duration>,
+    ) -> Result<ToolTimeout, ToolResult> {
+        Ok(ToolTimeout::bounded(
+            requested.unwrap_or(DEFAULT_TOOL_TIMEOUT),
+        ))
+    }
 
     fn decode(&self, input: Value) -> Result<Self::Input, ToolResult>;
 
@@ -159,6 +188,8 @@ impl ToolDescriptor {
 trait PreparedInvocation: Send {
     fn permission_resources(&self) -> &[PermissionResource];
 
+    fn timeout(&self) -> ToolTimeout;
+
     fn bind_authorized_resources(
         &mut self,
         resources: &[PermissionResource],
@@ -194,15 +225,18 @@ impl<T: NativeTool> ErasedTool for NativeEntry<T> {
 
     fn prepare(
         &self,
-        input: Value,
+        mut input: Value,
         services: ToolServices<'_>,
     ) -> Result<Box<dyn PreparedInvocation>, ToolResult> {
+        let requested = strip_timeout_envelope(&mut input)?;
+        let timeout = self.tool.timeout(&mut input, requested)?;
         let input = self.tool.decode(input)?;
         let resources = self.tool.permission_resources(&input, services)?;
         Ok(Box::new(PreparedNative {
             tool: Arc::clone(&self.tool),
             input,
             resources,
+            timeout,
         }))
     }
 }
@@ -211,11 +245,16 @@ struct PreparedNative<T: NativeTool> {
     tool: Arc<T>,
     input: T::Input,
     resources: Vec<PermissionResource>,
+    timeout: ToolTimeout,
 }
 
 impl<T: NativeTool> PreparedInvocation for PreparedNative<T> {
     fn permission_resources(&self) -> &[PermissionResource] {
         &self.resources
+    }
+
+    fn timeout(&self) -> ToolTimeout {
+        self.timeout
     }
 
     fn bind_authorized_resources(
@@ -236,6 +275,7 @@ impl<T: NativeTool> PreparedInvocation for PreparedNative<T> {
             tool,
             input,
             resources: _,
+            timeout: _,
         } = *self;
         Box::pin(async move { tool.execute(input, services, context).await })
     }
@@ -245,6 +285,7 @@ impl<T: NativeTool> PreparedInvocation for PreparedNative<T> {
 pub struct PreparedToolCall {
     descriptor: ToolDescriptor,
     invocation: Box<dyn PreparedInvocation>,
+    timeout: ToolTimeout,
 }
 
 impl PreparedToolCall {
@@ -272,6 +313,130 @@ impl PreparedToolCall {
     ) -> BoxFuture<'a, ToolResult> {
         self.invocation.invoke(services, context)
     }
+
+    async fn invoke_bounded(
+        self,
+        name: &str,
+        services: ToolServices<'_>,
+        context: &ToolCallContext,
+    ) -> ToolResult {
+        let timeout = self.timeout;
+        if timeout.disposition == ToolTimeoutDisposition::Delegated {
+            return self.invoke(services, context).await;
+        }
+
+        let cancellation = services.runtime.command_cancellation.child();
+        let call_context = ToolCallContext {
+            call_id: context.call_id.clone(),
+            thread_name: context.thread_name.clone(),
+            cancellation: Some(cancellation.clone()),
+        };
+        let started = Instant::now();
+        let mut invocation = Box::pin(self.invoke(services, &call_context));
+        let deadline = tokio::time::sleep(timeout.duration);
+        tokio::pin!(deadline);
+
+        tokio::select! {
+            biased;
+            () = services.runtime.command_cancellation.cancelled() => {
+                let execution_elapsed = started.elapsed();
+                cancellation.cancel();
+                let cleanup_started = Instant::now();
+                match timeout.disposition {
+                    ToolTimeoutDisposition::Settle => {
+                        let settled = invocation.await;
+                        if !settled.is_error
+                            || result_reports_committed(&settled)
+                            || result_reports_cancelled(&settled)
+                        {
+                            return settled;
+                        }
+                    }
+                    ToolTimeoutDisposition::Bounded => drop(invocation),
+                    ToolTimeoutDisposition::Delegated => unreachable!(),
+                }
+                timeout_result(name, timeout, execution_elapsed, cleanup_started.elapsed(), true)
+            }
+            result = &mut invocation => result,
+            () = &mut deadline => {
+                let execution_elapsed = started.elapsed();
+                cancellation.cancel();
+                let cleanup_started = Instant::now();
+                match timeout.disposition {
+                    ToolTimeoutDisposition::Settle => {
+                        let settled = invocation.await;
+                        if !settled.is_error
+                            || result_reports_committed(&settled)
+                            || (matches!(name, "subagent_cancel" | "orchestrator_cancel")
+                                && result_reports_cancelled(&settled))
+                        {
+                            return settled;
+                        }
+                    }
+                    ToolTimeoutDisposition::Bounded => drop(invocation),
+                    ToolTimeoutDisposition::Delegated => unreachable!(),
+                }
+                timeout_result(name, timeout, execution_elapsed, cleanup_started.elapsed(), false)
+            }
+        }
+    }
+}
+
+fn result_reports_cancelled(result: &ToolResult) -> bool {
+    result
+        .content
+        .as_text()
+        .and_then(|content| serde_json::from_str::<Value>(content).ok())
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|status| status == "cancelled")
+}
+
+fn result_reports_committed(result: &ToolResult) -> bool {
+    result
+        .content
+        .as_text()
+        .and_then(|content| serde_json::from_str::<Value>(content).ok())
+        .and_then(|value| value.get("committed").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn timeout_result(
+    name: &str,
+    timeout: ToolTimeout,
+    elapsed: Duration,
+    cleanup: Duration,
+    cancelled: bool,
+) -> ToolResult {
+    let status = if cancelled { "cancelled" } else { "timed_out" };
+    let uncertainty = if timeout.remote_outcome_uncertain {
+        " The remote outcome is uncertain."
+    } else {
+        ""
+    };
+    ToolResult::text(
+        serde_json::json!({
+            "error": format!(
+                "Tool '{name}' {status} after {} ms (limit {} ms; cleanup {} ms).{uncertainty}",
+                elapsed.as_millis(),
+                timeout.duration.as_millis(),
+                cleanup.as_millis(),
+            ),
+            "_nac": {
+                "status": status,
+                "timeout_ms": timeout.duration.as_millis() as u64,
+                "execution_duration_ms": elapsed.as_millis() as u64,
+                "cleanup_duration_ms": cleanup.as_millis() as u64,
+                "remote_outcome_uncertain": timeout.remote_outcome_uncertain
+            }
+        })
+        .to_string(),
+        true,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,6 +445,7 @@ pub enum ToolRegistryError {
     DuplicateNativeType(&'static str),
     DuplicateCapability(String),
     UnknownCapability(String),
+    InvalidCapabilitySchema { name: String, reason: String },
 }
 
 impl fmt::Display for ToolRegistryError {
@@ -296,6 +462,12 @@ impl fmt::Display for ToolRegistryError {
                 write!(formatter, "capability '{name}' was selected more than once")
             }
             Self::UnknownCapability(name) => write!(formatter, "unknown capability '{name}'"),
+            Self::InvalidCapabilitySchema { name, reason } => {
+                write!(
+                    formatter,
+                    "invalid schema for capability '{name}': {reason}"
+                )
+            }
         }
     }
 }
@@ -380,8 +552,16 @@ impl ToolRegistryBuilder {
             return self;
         }
         let tool = Arc::new(tool);
+        let mut definition = tool.definition();
+        if let Err(reason) = decorate_timeout_schema(&mut definition.function.parameters) {
+            self.error = Some(ToolRegistryError::InvalidCapabilitySchema {
+                name: definition.function.name.clone(),
+                reason: reason.to_string(),
+            });
+            return self;
+        }
         let descriptor = ToolDescriptor {
-            definition: tool.definition(),
+            definition,
             admission: tool.admission(),
         };
         let name = descriptor.definition.function.name.clone();
@@ -502,9 +682,11 @@ impl ToolSnapshot {
         };
         let descriptor = entry.descriptor();
         let invocation = entry.prepare(input, services)?;
+        let timeout = invocation.timeout();
         Ok(PreparedToolCall {
             descriptor,
             invocation,
+            timeout,
         })
     }
 
@@ -601,7 +783,7 @@ impl ToolSnapshot {
                 if let Err(error) = prepared.bind_authorized_resources(&resources, services) {
                     return error;
                 }
-                prepared.invoke(services, context).await
+                prepared.invoke_bounded(name, services, context).await
             }
             Err(error) => error,
         }

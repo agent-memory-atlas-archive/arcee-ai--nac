@@ -60,6 +60,7 @@ pub trait OrchestrationController: Send + Sync + 'static {
         &'a self,
         parent_session_id: &'a str,
         orchestrator_session_id: &'a str,
+        expected_generation: u64,
     ) -> OrchestrationFuture<'a, ManagedOrchestratorRecord>;
 
     fn wake<'a>(&'a self, session_id: &'a str) -> OrchestrationFuture<'a, ()>;

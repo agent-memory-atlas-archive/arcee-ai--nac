@@ -588,7 +588,13 @@ fn settle_goal_terminal_state(
     }
     let next_attempt_at_epoch_ms = (disposition == GoalRunDisposition::RetryableFailed
         && status == GoalStatus::Active)
-        .then(|| terminal_at_epoch_ms.saturating_add(retry_delay_ms(next_transient_failures)));
+        .then(|| {
+            let local_delay_ms = retry_delay_ms(next_transient_failures);
+            let provider_delay_ms = failure
+                .and_then(|failure| failure.retry_after_ms)
+                .unwrap_or(0);
+            terminal_at_epoch_ms.saturating_add(local_delay_ms.max(provider_delay_ms))
+        });
     let stored_failure = failure.cloned().map(|failure| {
         let action = if failure.recovery_action == crate::run_failure::RecoveryAction::Settings {
             crate::run_failure::RecoveryAction::Settings
@@ -1019,6 +1025,42 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn provider_retry_after_is_a_minimum_for_the_durable_goal_deadline() {
+        let path = test_path("provider-retry-after");
+        initialize(&path).unwrap();
+        direct_session(&path, "direct");
+        create_session_goal(&path, "direct", "finish", None, None).unwrap();
+        bind_session_goal_run(
+            &path,
+            "direct",
+            &GoalRunBaseline {
+                run_id: "run-1".into(),
+                billable_tokens: 0,
+                started_at_epoch_ms: 1_000,
+                continuation: true,
+            },
+        )
+        .unwrap();
+        let mut failure = transient_stream_failure();
+        failure.retry_after_ms = Some(12_000);
+
+        let goal = settle_session_goal_run_with_failure(
+            &path,
+            "direct",
+            "run-1",
+            0,
+            5_000,
+            GoalRunDisposition::RetryableFailed,
+            Some(&failure),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(goal.next_attempt_at_epoch_ms, Some(17_000));
+        assert_eq!(goal.last_failure.unwrap().retry_after_ms, Some(12_000));
     }
 
     #[test]

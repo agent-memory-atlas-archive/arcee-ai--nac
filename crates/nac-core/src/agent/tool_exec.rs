@@ -335,6 +335,44 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn timed_out_exclusive_call_releases_the_following_admission_group() {
+        let root = std::env::temp_dir().join(format!(
+            "nac-tool-deadline-admission-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("ready.txt"), "ready").unwrap();
+        let mut runtime = test_runtime();
+        runtime.workspace_cwd = root.clone();
+        runtime.backend = crate::sandbox::execution_backend_from_sandbox(None, &root);
+        let results = execute_tools_parallel(
+            vec![
+                make_tool_call(
+                    "slow",
+                    "exec_command",
+                    json!({"cmd":"sleep 30","_nac":{"timeout_ms":10}}),
+                ),
+                make_tool_call("fast", "read", json!({"path":"ready.txt"})),
+            ],
+            runtime,
+            ModelClient::new_for_test(),
+            EventSink::none(),
+            None,
+            true,
+        )
+        .await;
+
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[0].2.content.to_string().contains("timed_out"),
+            "{}",
+            results[0].2.content
+        );
+        assert!(!results[1].2.is_error, "{}", results[1].2.content);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     // ------------------------------------------------------------------
     // Integration tests
     // ------------------------------------------------------------------

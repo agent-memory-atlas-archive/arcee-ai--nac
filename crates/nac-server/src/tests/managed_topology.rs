@@ -763,6 +763,48 @@ async fn managed_orchestrator_cancel_propagates_and_delivers_once() {
     .await
     .unwrap();
 
+    let expected_run_id = running.run_id.as_deref().unwrap();
+    let store_path = root.join("store.db");
+    let connection = rusqlite::Connection::open(&store_path).unwrap();
+    connection
+        .execute(
+            "UPDATE managed_orchestrators SET run_id = 'superseded-run' \
+             WHERE orchestrator_session_id = ?1",
+            rusqlite::params![&running.orchestrator_session_id],
+        )
+        .unwrap();
+    let mismatch = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager
+            .delegation()
+            .cancel_managed_orchestrator("delegating", &running.orchestrator_session_id),
+    )
+    .await
+    .expect("a managed run identity mismatch must fail without monitoring")
+    .unwrap_err();
+    assert!(
+        mismatch.to_string().contains("is no longer active"),
+        "unexpected managed cancellation mismatch: {mismatch:#}"
+    );
+    assert_eq!(
+        manager
+            .attach_session(&running.orchestrator_session_id)
+            .await
+            .unwrap()
+            .active_run()
+            .as_ref()
+            .map(|active| active.run_id.as_str()),
+        Some(expected_run_id),
+        "a stale managed cancellation must not cancel the active replacement"
+    );
+    connection
+        .execute(
+            "UPDATE managed_orchestrators SET run_id = ?2 \
+             WHERE orchestrator_session_id = ?1",
+            rusqlite::params![&running.orchestrator_session_id, expected_run_id],
+        )
+        .unwrap();
+
     let cancelled = tokio::time::timeout(
         Duration::from_secs(10),
         app.oneshot(

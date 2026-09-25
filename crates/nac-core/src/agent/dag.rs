@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 
+use futures_util::FutureExt;
 use tokio::task::JoinSet;
 
 use super::*;
@@ -281,6 +283,7 @@ pub(crate) fn spawn_non_thread_into(
         let call_context = tools::kernel::ToolCallContext {
             call_id: Some(tool_call_id.clone()),
             thread_name: thread_name.clone(),
+            ..Default::default()
         };
 
         join_set.spawn(async move {
@@ -302,14 +305,18 @@ pub(crate) fn spawn_non_thread_into(
                     );
                 }
             };
-            let result = tools::execute_tool_with_context(
+            let result = AssertUnwindSafe(tools::execute_tool_with_context(
                 &tool_name,
                 parsed_args,
                 &runtime,
                 &client,
                 &call_context,
-            )
-            .await;
+            ))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                ToolResult::text(format!("Error: tool '{tool_name}' panicked"), true)
+            });
             (index, None, tool_call_id, tool_name, result)
         });
     }
@@ -513,7 +520,13 @@ pub(crate) async fn execute_with_dag(
             in_flight.insert(dispatch_idx);
 
             join_set.spawn(async move {
-                let result = thread::execute_parsed_dispatch(params, &runtime, &client).await;
+                let result =
+                    AssertUnwindSafe(thread::execute_parsed_dispatch(params, &runtime, &client))
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            ToolResult::text("Error: tool 'thread' panicked", true)
+                        });
                 (
                     original_index,
                     Some(dispatch_idx),

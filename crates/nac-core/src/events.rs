@@ -138,6 +138,16 @@ pub enum CompactionFailure {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum ToolCompletionStatus {
+    Success,
+    Error,
+    TimedOut,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -174,6 +184,16 @@ pub enum AgentEvent {
         command_status: Option<crate::terminal::CommandStatus>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion_status: Option<ToolCompletionStatus>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective_timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cleanup_duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        remote_outcome_uncertain: bool,
     },
     ThreadStarted {
         name: String,
@@ -308,6 +328,61 @@ impl AgentEvent {
         } else {
             (None, None)
         };
+        // `_nac` is a reserved result envelope emitted by the execution
+        // kernel. Tool output itself is untrusted, so accept only the exact
+        // error-only timeout/cancellation shape produced by `timeout_result`.
+        // In particular, content can never declare its own success or error.
+        let metadata = result
+            .is_error
+            .then(|| result.content.as_text())
+            .flatten()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
+            .and_then(|value| trusted_deadline_metadata(&name, &value));
+        let completion_status = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("status"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|status| match status {
+                "timed_out" => Some(ToolCompletionStatus::TimedOut),
+                "cancelled" => Some(ToolCompletionStatus::Cancelled),
+                _ => None,
+            })
+            .or_else(|| {
+                if !result.is_error {
+                    return None;
+                }
+                let content = result.content.as_text()?;
+                if name == "thread" && content.contains(" timed out after ") {
+                    Some(ToolCompletionStatus::TimedOut)
+                } else if (name == "thread" && content.to_ascii_lowercase().contains("cancelled"))
+                    || durable_result_reports_cancelled(&name, content)
+                {
+                    Some(ToolCompletionStatus::Cancelled)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| match command_status {
+                Some(crate::terminal::CommandStatus::TimedOut) => {
+                    Some(ToolCompletionStatus::TimedOut)
+                }
+                Some(crate::terminal::CommandStatus::Cancelled) => {
+                    Some(ToolCompletionStatus::Cancelled)
+                }
+                Some(crate::terminal::CommandStatus::Completed)
+                    if exit_code.is_some_and(|code| code != 0) =>
+                {
+                    Some(ToolCompletionStatus::Error)
+                }
+                _ if result.is_error => Some(ToolCompletionStatus::Error),
+                _ => Some(ToolCompletionStatus::Success),
+            });
+        let metric = |name| {
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get(name))
+                .and_then(serde_json::Value::as_u64)
+        };
         Self::ToolCallFinished {
             thread_name,
             call_id,
@@ -316,8 +391,71 @@ impl AgentEvent {
             is_error: result.is_error,
             command_status,
             exit_code,
+            completion_status,
+            effective_timeout_ms: metric("timeout_ms"),
+            execution_duration_ms: metric("execution_duration_ms"),
+            cleanup_duration_ms: metric("cleanup_duration_ms"),
+            remote_outcome_uncertain: metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("remote_outcome_uncertain"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         }
     }
+}
+
+fn trusted_deadline_metadata(name: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+    let object = value.as_object()?;
+    if object.len() != 2 || !object.contains_key("error") || !object.contains_key("_nac") {
+        return None;
+    }
+    let error = object.get("error")?.as_str()?;
+    let metadata = object.get("_nac")?.as_object()?;
+    if metadata.len() != 5
+        || ![
+            "status",
+            "timeout_ms",
+            "execution_duration_ms",
+            "cleanup_duration_ms",
+            "remote_outcome_uncertain",
+        ]
+        .into_iter()
+        .all(|key| metadata.contains_key(key))
+    {
+        return None;
+    }
+    let status = metadata.get("status")?.as_str()?;
+    if !matches!(status, "timed_out" | "cancelled")
+        || !error.starts_with(&format!("Tool '{name}' {status} after "))
+        || metadata.get("timeout_ms")?.as_u64().is_none()
+        || metadata.get("execution_duration_ms")?.as_u64().is_none()
+        || metadata.get("cleanup_duration_ms")?.as_u64().is_none()
+        || metadata
+            .get("remote_outcome_uncertain")?
+            .as_bool()
+            .is_none()
+    {
+        return None;
+    }
+    Some(serde_json::Value::Object(metadata.clone()))
+}
+
+fn durable_result_reports_cancelled(name: &str, content: &str) -> bool {
+    if !matches!(
+        name,
+        "subagent" | "subagent_cancel" | "orchestrator_launch" | "orchestrator_cancel"
+    ) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|status| status == "cancelled")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -958,6 +1096,11 @@ pub(crate) fn sanitize_external_agent_event(event: AgentEvent) -> Option<AgentEv
             is_error,
             command_status,
             exit_code,
+            completion_status,
+            effective_timeout_ms,
+            execution_duration_ms,
+            cleanup_duration_ms,
+            remote_outcome_uncertain,
         } => AgentEvent::ToolCallFinished {
             thread_name,
             call_id,
@@ -966,6 +1109,11 @@ pub(crate) fn sanitize_external_agent_event(event: AgentEvent) -> Option<AgentEv
             is_error,
             command_status,
             exit_code,
+            completion_status,
+            effective_timeout_ms,
+            execution_duration_ms,
+            cleanup_duration_ms,
+            remote_outcome_uncertain,
         },
         AgentEvent::ThreadStarted {
             name,

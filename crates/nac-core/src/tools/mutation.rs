@@ -25,14 +25,15 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::tools::{
-    remote_file_lock_busy, ToolResult, ToolRuntime, REMOTE_FILE_LOCK_RETRY_INTERVAL,
+    remote_file_lock_busy, ThreadCancellation, ToolResult, ToolRuntime,
+    REMOTE_FILE_LOCK_RETRY_INTERVAL,
 };
 
 #[path = "mutation_remote.rs"]
 mod remote;
-pub(crate) use remote::execute_remote;
 #[cfg(test)]
 use remote::REMOTE_MUTATION_SCRIPT;
+pub(crate) use remote::{execute_remote, execute_remote_cancellable};
 
 const FILE_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(1);
 pub(crate) const MAX_READ_OUTPUT_BYTES: usize = 30_000;
@@ -339,12 +340,23 @@ pub(crate) fn read_error(path: &str, error: io::Error) -> ToolResult {
     error_tool_result(MutationError::io(path, error))
 }
 
+#[cfg(test)]
 pub(crate) async fn edit_local(
     path: PathBuf,
     path_display: String,
     expected_revision: String,
     edits: Vec<EditSpec>,
 ) -> ToolResult {
+    edit_local_cancellable(path, path_display, expected_revision, edits, None).await
+}
+
+pub(crate) async fn edit_local_cancellable(
+    path: PathBuf,
+    path_display: String,
+    expected_revision: String,
+    edits: Vec<EditSpec>,
+    cancellation: Option<&ThreadCancellation>,
+) -> ToolResult {
     mutate_local(
         path,
         path_display,
@@ -352,15 +364,17 @@ pub(crate) async fn edit_local(
             expected_revision,
             edits,
         },
+        cancellation,
     )
     .await
 }
 
-pub(crate) async fn edit_local_bound(
+pub(crate) async fn edit_local_bound_cancellable(
     path: PathBuf,
     path_display: String,
     expected_revision: String,
     edits: Vec<EditSpec>,
+    cancellation: Option<&ThreadCancellation>,
 ) -> ToolResult {
     mutate_local_bound(
         path,
@@ -369,16 +383,28 @@ pub(crate) async fn edit_local_bound(
             expected_revision,
             edits,
         },
+        cancellation,
     )
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn write_local(
     path: PathBuf,
     path_display: String,
     content: String,
     expected_revision: Option<String>,
 ) -> ToolResult {
+    write_local_cancellable(path, path_display, content, expected_revision, None).await
+}
+
+pub(crate) async fn write_local_cancellable(
+    path: PathBuf,
+    path_display: String,
+    content: String,
+    expected_revision: Option<String>,
+    cancellation: Option<&ThreadCancellation>,
+) -> ToolResult {
     mutate_local(
         path,
         path_display,
@@ -386,15 +412,17 @@ pub(crate) async fn write_local(
             expected_revision,
             content,
         },
+        cancellation,
     )
     .await
 }
 
-pub(crate) async fn write_local_bound(
+pub(crate) async fn write_local_bound_cancellable(
     path: PathBuf,
     path_display: String,
     content: String,
     expected_revision: Option<String>,
+    cancellation: Option<&ThreadCancellation>,
 ) -> ToolResult {
     mutate_local_bound(
         path,
@@ -403,15 +431,17 @@ pub(crate) async fn write_local_bound(
             expected_revision,
             content,
         },
+        cancellation,
     )
     .await
 }
-pub(crate) async fn edit_mounted(
+pub(crate) async fn edit_mounted_cancellable(
     root: PathBuf,
     relative: PathBuf,
     path_display: String,
     expected_revision: String,
     edits: Vec<EditSpec>,
+    cancellation: Option<&ThreadCancellation>,
 ) -> ToolResult {
     mutate_mounted(
         root,
@@ -421,10 +451,12 @@ pub(crate) async fn edit_mounted(
             expected_revision,
             edits,
         },
+        cancellation,
     )
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn write_mounted(
     root: PathBuf,
     relative: PathBuf,
@@ -432,6 +464,25 @@ pub(crate) async fn write_mounted(
     content: String,
     expected_revision: Option<String>,
 ) -> ToolResult {
+    write_mounted_cancellable(
+        root,
+        relative,
+        path_display,
+        content,
+        expected_revision,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn write_mounted_cancellable(
+    root: PathBuf,
+    relative: PathBuf,
+    path_display: String,
+    content: String,
+    expected_revision: Option<String>,
+    cancellation: Option<&ThreadCancellation>,
+) -> ToolResult {
     mutate_mounted(
         root,
         relative,
@@ -440,6 +491,7 @@ pub(crate) async fn write_mounted(
             expected_revision,
             content,
         },
+        cancellation,
     )
     .await
 }
@@ -585,7 +637,18 @@ enum MutationRequest {
     },
 }
 
-async fn mutate_local(path: PathBuf, path_display: String, request: MutationRequest) -> ToolResult {
+async fn mutate_local(
+    path: PathBuf,
+    path_display: String,
+    request: MutationRequest,
+    cancellation: Option<&ThreadCancellation>,
+) -> ToolResult {
+    if cancellation.is_some_and(ThreadCancellation::is_cancelled) {
+        return error_tool_result(MutationError::precondition(
+            "cancelled",
+            format!("file mutation cancelled before path resolution: {path_display}"),
+        ));
+    }
     let bound = match tokio::task::spawn_blocking(move || resolve_target_path(&path)).await {
         Ok(Ok(path)) => path,
         Ok(Err(error)) => return error_tool_result(MutationError::io(&path_display, error)),
@@ -596,13 +659,14 @@ async fn mutate_local(path: PathBuf, path_display: String, request: MutationRequ
             ))
         }
     };
-    mutate_local_bound(bound, path_display, request).await
+    mutate_local_bound(bound, path_display, request, cancellation).await
 }
 
 async fn mutate_local_bound(
     path: PathBuf,
     path_display: String,
     request: MutationRequest,
+    cancellation: Option<&ThreadCancellation>,
 ) -> ToolResult {
     #[cfg(test)]
     wait_at_bound_local_open_gate(&path);
@@ -616,12 +680,19 @@ async fn mutate_local_bound(
                 ))
             }
         };
-        mutate_mounted(PathBuf::from("/"), relative, path_display, request).await
+        mutate_mounted(
+            PathBuf::from("/"),
+            relative,
+            path_display,
+            request,
+            cancellation,
+        )
+        .await
     }
     #[cfg(not(unix))]
     {
         let target = path;
-        let lock = match acquire_path_lock(&target).await {
+        let lock = match acquire_path_lock(&target, cancellation).await {
             Ok(lock) => lock,
             Err(error) => return error_tool_result(MutationError::io(&path_display, error)),
         };
@@ -645,6 +716,7 @@ async fn mutate_mounted(
     relative: PathBuf,
     path_display: String,
     request: MutationRequest,
+    cancellation: Option<&ThreadCancellation>,
 ) -> ToolResult {
     #[cfg(unix)]
     {
@@ -659,7 +731,7 @@ async fn mutate_mounted(
             Ok(root) => lexical_normalize(&root.join(&relative)),
             Err(error) => return error_tool_result(MutationError::io(&path_display, error)),
         };
-        let lock = match acquire_path_lock(&identity).await {
+        let lock = match acquire_path_lock(&identity, cancellation).await {
             Ok(lock) => lock,
             Err(error) => return error_tool_result(MutationError::io(&path_display, error)),
         };
@@ -1421,7 +1493,16 @@ impl Drop for TempCleanup {
     }
 }
 
-async fn acquire_path_lock(target: &Path) -> io::Result<File> {
+async fn acquire_path_lock(
+    target: &Path,
+    cancellation: Option<&ThreadCancellation>,
+) -> io::Result<File> {
+    if cancellation.is_some_and(ThreadCancellation::is_cancelled) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "file mutation cancelled before lock acquisition",
+        ));
+    }
     let target = target.to_path_buf();
     let file = tokio::task::spawn_blocking(move || {
         let lock_path = lock_path(&target)?;
@@ -1433,7 +1514,19 @@ async fn acquire_path_lock(target: &Path) -> io::Result<File> {
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => return Ok(file),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                tokio::time::sleep(FILE_LOCK_POLL_INTERVAL).await;
+                if let Some(cancellation) = cancellation {
+                    tokio::select! {
+                        () = tokio::time::sleep(FILE_LOCK_POLL_INTERVAL) => {}
+                        () = cancellation.cancelled() => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "file mutation cancelled while waiting for its lock",
+                            ));
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(FILE_LOCK_POLL_INTERVAL).await;
+                }
             }
             Err(error) => return Err(error),
         }

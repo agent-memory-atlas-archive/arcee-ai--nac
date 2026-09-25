@@ -124,18 +124,21 @@ export function RunFailureNotice({
 }) {
   const retryScheduled = failure.recovery_action === "automatic_retry" && goal?.status === "active";
   const retryExhausted = failure.recovery_action === "resume_goal" && goal?.status === "blocked";
+  const providerCapacity = failure.kind === "capacity";
   const partial = Boolean(
     failure.partial_output?.text ||
     failure.partial_output?.reasoning ||
     failure.partial_output?.tool_call,
   );
-  const title = retryScheduled
-    ? "Goal retry scheduled"
-    : retryExhausted
-      ? "Goal stopped after repeated run failures"
-      : partial
-        ? "Run stopped after a partial response"
-        : failure.summary;
+  const title = providerCapacity
+    ? failure.summary
+    : retryScheduled
+      ? "Goal retry scheduled"
+      : retryExhausted
+        ? "Goal stopped after repeated run failures"
+        : partial
+          ? "Run stopped after a partial response"
+          : failure.summary;
   const retryTime = goal?.next_attempt_at_epoch_ms
     ? new Date(goal.next_attempt_at_epoch_ms).toLocaleTimeString([], {
         hour: "numeric",
@@ -143,6 +146,14 @@ export function RunFailureNotice({
         second: "2-digit",
       })
     : null;
+  const summaryPrefix = providerCapacity ? "" : `${failure.summary} `;
+  const explanation = retryScheduled
+    ? `${summaryPrefix}The durable goal and its usage were preserved. NAC will continue automatically${retryTime ? ` at ${retryTime}` : ""}.`
+    : retryExhausted
+      ? `${summaryPrefix}The durable goal and its usage were preserved. Resume it when you want another bounded retry sequence.`
+      : providerCapacity
+        ? `Retrying later may be necessary.${providerRetryDelay(failure.retry_after_ms)}`
+        : failure.summary;
   return (
     <ChatSessionMessage
       role={retryScheduled ? "status" : "alert"}
@@ -150,13 +161,7 @@ export function RunFailureNotice({
       title={title}
       action={action}
     >
-      <span>
-        {retryScheduled
-          ? `The durable goal and its usage were preserved. NAC will continue automatically${retryTime ? ` at ${retryTime}` : ""}.`
-          : retryExhausted
-            ? "The durable goal and its usage were preserved. Resume it when you want another bounded retry sequence."
-            : failure.summary}
-      </span>
+      <span>{explanation}</span>
       <details className="mt-2">
         <summary className="cursor-pointer">Diagnostics</summary>
         <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs">
@@ -165,6 +170,19 @@ export function RunFailureNotice({
       </details>
     </ChatSessionMessage>
   );
+}
+
+function providerRetryDelay(retryAfterMs: number | null | undefined): string {
+  if (retryAfterMs == null) return "";
+  if (retryAfterMs >= 60_000 && retryAfterMs % 60_000 === 0) {
+    const minutes = retryAfterMs / 60_000;
+    return ` The provider asked NAC to wait at least ${minutes} ${minutes === 1 ? "minute" : "minutes"} before retrying.`;
+  }
+  if (retryAfterMs >= 1_000 && retryAfterMs % 1_000 === 0) {
+    const seconds = retryAfterMs / 1_000;
+    return ` The provider asked NAC to wait at least ${seconds} ${seconds === 1 ? "second" : "seconds"} before retrying.`;
+  }
+  return ` The provider asked NAC to wait at least ${retryAfterMs} milliseconds before retrying.`;
 }
 
 /**

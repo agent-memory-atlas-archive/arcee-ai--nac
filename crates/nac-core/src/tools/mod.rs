@@ -18,6 +18,7 @@ pub(crate) const REMOTE_FILE_LOCK_RETRY_INTERVAL: Duration = Duration::from_mill
 const REMOTE_FILE_LOCK_BUSY_EXIT_CODE: i32 = 75;
 const REMOTE_FILE_LOCK_BUSY_MARKER: &str = "NAC_FILE_LOCK_BUSY";
 
+mod deadline;
 mod discovery;
 pub mod edit;
 pub mod exec_command;

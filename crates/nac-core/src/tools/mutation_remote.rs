@@ -453,11 +453,19 @@ finally:
     lock_file.close()
 "#;
 
+pub(crate) async fn execute_remote(payload: Value, runtime: &ToolRuntime) -> ToolResult {
+    execute_remote_cancellable(payload, runtime, None).await
+}
+
 #[expect(
     clippy::expect_used,
     reason = "one reserved and validated remote image part remains within ToolContent limits"
 )]
-pub(crate) async fn execute_remote(payload: Value, runtime: &ToolRuntime) -> ToolResult {
+pub(crate) async fn execute_remote_cancellable(
+    payload: Value,
+    runtime: &ToolRuntime,
+    cancellation: Option<&ThreadCancellation>,
+) -> ToolResult {
     let args = vec![
         "-I".to_string(),
         "-c".to_string(),
@@ -478,9 +486,27 @@ pub(crate) async fn execute_remote(payload: Value, runtime: &ToolRuntime) -> Too
         .unwrap_or_default()
         .to_string();
     loop {
+        if cancellation.is_some_and(ThreadCancellation::is_cancelled) {
+            return error_tool_result(MutationError::precondition(
+                "cancelled",
+                format!("remote file mutation cancelled before execution: {path_display}"),
+            ));
+        }
         match runtime.backend.exec("python3", &args, Some(&input)).await {
             Ok(output) if remote_file_lock_busy(&output) => {
-                tokio::time::sleep(REMOTE_FILE_LOCK_RETRY_INTERVAL).await;
+                if let Some(cancellation) = cancellation {
+                    tokio::select! {
+                        () = tokio::time::sleep(REMOTE_FILE_LOCK_RETRY_INTERVAL) => {}
+                        () = cancellation.cancelled() => {
+                            return error_tool_result(MutationError::precondition(
+                                "cancelled",
+                                format!("remote file mutation cancelled while waiting for its lock: {path_display}"),
+                            ));
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(REMOTE_FILE_LOCK_RETRY_INTERVAL).await;
+                }
             }
             Ok(output) => {
                 let content = String::from_utf8_lossy(&output.stdout).trim().to_string();

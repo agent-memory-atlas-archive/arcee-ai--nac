@@ -383,7 +383,9 @@ fn mutation_process_helper() {
     let target = PathBuf::from(target);
     let resolved = target.canonicalize().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let lock = runtime.block_on(acquire_path_lock(&resolved)).unwrap();
+    let lock = runtime
+        .block_on(acquire_path_lock(&resolved, None))
+        .unwrap();
     fs::write(&ready, b"ready").unwrap();
     std::thread::sleep(Duration::from_millis(100));
     mutate_locked(
@@ -449,6 +451,42 @@ async fn cross_process_mutations_serialize_and_stale_loser_cannot_continue() {
         loser.content
     );
     assert_eq!(fs::read(&path).unwrap(), b"child");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn cancelled_lock_waiter_cannot_publish_after_the_lock_is_released() {
+    let dir = std::env::temp_dir().join(format!("nac-mutation-cancel-{}", Uuid::new_v4()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("file.txt");
+    fs::write(&path, "before").unwrap();
+    let held = acquire_path_lock(&path.canonicalize().unwrap(), None)
+        .await
+        .unwrap();
+    let cancellation = crate::tools::ThreadCancellation::default();
+    let task_cancellation = cancellation.clone();
+    let task_path = path.clone();
+    let mutation = tokio::spawn(async move {
+        write_local_cancellable(
+            task_path,
+            "file.txt".into(),
+            "after".into(),
+            Some(revision(b"before")),
+            Some(&task_cancellation),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    cancellation.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(1), mutation)
+        .await
+        .expect("cancelled lock waiter must settle")
+        .unwrap();
+    assert!(result.is_error);
+    assert!(result.content.contains("cancelled"), "{}", result.content);
+    drop(held);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(fs::read(&path).unwrap(), b"before");
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -1026,7 +1064,7 @@ fn worker_definitions_advertise_revisioned_batched_contract() {
         .unwrap();
     assert_eq!(
         edit.function.parameters["required"],
-        json!(["path", "expected_revision", "edits"])
+        json!(["path", "expected_revision", "edits", "_nac"])
     );
     assert_eq!(
         edit.function.parameters["properties"]["edits"]["type"],
@@ -1038,7 +1076,7 @@ fn worker_definitions_advertise_revisioned_batched_contract() {
         .unwrap();
     assert_eq!(
         write.function.parameters["required"],
-        json!(["path", "content", "expected_revision"])
+        json!(["path", "content", "expected_revision", "_nac"])
     );
     assert_eq!(
         write.function.parameters["properties"]["expected_revision"]["type"],
