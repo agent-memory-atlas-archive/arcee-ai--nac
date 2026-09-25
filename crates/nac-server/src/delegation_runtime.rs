@@ -424,7 +424,7 @@ impl nac_core::orchestration_control::OrchestrationController for ServerOrchestr
                 anyhow!("running managed orchestrator is missing its run identity")
             })?;
             manager
-                .cancel_active_run_exact(orchestrator_session_id, expected_run_id)
+                .cancel_active_run_exact_unchecked(orchestrator_session_id, expected_run_id)
                 .await?;
             manager
                 .monitor_managed_orchestrator(orchestrator_session_id, relation.generation)

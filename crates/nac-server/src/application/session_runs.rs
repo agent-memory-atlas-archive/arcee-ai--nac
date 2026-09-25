@@ -242,11 +242,20 @@ impl<'a> SessionRunApplication<'a> {
     }
 
     pub(crate) async fn cancel_exact(&self, session_id: &str, expected_run_id: &str) -> Result<()> {
+        self.manager.require_primary_operation_session(session_id)?;
+        self.cancel_exact_unchecked(session_id, expected_run_id)
+            .await
+    }
+
+    pub(crate) async fn cancel_exact_unchecked(
+        &self,
+        session_id: &str,
+        expected_run_id: &str,
+    ) -> Result<()> {
         const MAX_RUN_ID_BYTES: usize = 128;
         if expected_run_id.is_empty() || expected_run_id.len() > MAX_RUN_ID_BYTES {
             return Err(anyhow!("run_id is invalid"));
         }
-        self.manager.require_primary_operation_session(session_id)?;
         let service = self.manager.attach_session(session_id).await?;
         let Some(active) = service.active_run() else {
             return match sessions::SessionOperationLease::try_acquire(
