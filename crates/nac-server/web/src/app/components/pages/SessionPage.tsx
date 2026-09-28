@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 
 import {
@@ -9,23 +9,20 @@ import {
   Icon,
   IconName,
   Modal,
-  Tooltip,
-  TooltipPosition,
 } from "@/app/atoms";
 import { BranchPicker } from "@/app/components/inspector/BranchPicker";
 import { ChatInputBox } from "@/app/components/inspector/ChatInputBox";
 import { MobileBottomBar } from "@/app/components/inspector/MobileBottomBar";
+import { RightSidebarRail } from "@/app/components/inspector/RightSidebarRail";
 import { SessionSideBox } from "@/app/components/inspector/SessionSideBox";
-import { SessionIdentity } from "@/app/components/inspector/SessionIdentity";
 import { Transcript } from "@/app/components/inspector/Transcript";
-import { ProjectSessionTabs } from "@/app/components/projects/ProjectSessionTabs";
-import { useIsDesktop, useIsMobile } from "@/app/hooks/useMediaQuery";
+import { TopSingleSessionHeader } from "@/app/components/inspector/TopSingleSessionHeader";
+import { useIsMobile } from "@/app/hooks/useMediaQuery";
 import { useRunStateSync, useSessionStream } from "@/app/hooks/useSessionStream";
 import { cn } from "@/app/lib/cn";
-import { parseStoreTime } from "@/app/lib/format";
-import { primarySessions } from "@/app/lib/projects";
 import { perfRender } from "@/app/lib/perfDebug";
 import { sessionPanelPolicy } from "@/app/lib/sessionBehavior";
+import type { SessionBehavior } from "@/app/types/api";
 import { useErrorNotice } from "@/app/hooks/useErrorNotice";
 import {
   DEFAULT_SESSION_PANEL,
@@ -35,8 +32,6 @@ import {
   type SessionPanel,
 } from "@/app/lib/routes";
 import {
-  useSessions,
-  useProjects,
   useSessionSnapshot,
   useSessionSummary,
   useSshConnect,
@@ -44,7 +39,10 @@ import {
 } from "@/app/services/queries";
 import { clearAttention } from "@/app/store/attentionStore";
 import {
+  bindSidePanelProject,
+  unbindSidePanelProject,
   resetSessionSelection,
+  setSidePanelAnimate,
   revealSidePanel,
   showSidePanelList,
   toggleSidePanelCollapsed,
@@ -55,6 +53,7 @@ import {
   useSelectedThread,
   useSelectedThreadRunning,
   useSelectedWorkset,
+  useSidePanelAnimate,
   useSidePanelCollapsed,
   useSidePanelExpanded,
 } from "@/app/store/sessionLayoutStore";
@@ -115,18 +114,14 @@ export default function SessionPage() {
   }>();
   const navigate = useNavigate();
   const id = sessionId ?? null;
-  const [heldProjectId, setHeldProjectId] = useState<string | null>(null);
 
   perfRender("SessionPage");
 
   const { data: snapshot = null, error, refetch: refetchSnapshot } = useSessionSnapshot(id);
   const { data: entry = null } = useSessionSummary(id);
-  const { data: sessionList } = useSessions();
-  const allSessions = sessionList ?? [];
-  const { data: projectList } = useProjects();
-  const allProjects = projectList?.projects ?? [];
   const toNotice = useErrorNotice(id, entry?.summary.backend);
   const collapsed = useSidePanelCollapsed();
+  const animateSidePanel = useSidePanelAnimate();
   const expanded = useSidePanelExpanded();
   const selectedThread = useSelectedThread();
   const selectedThreadRunning = useSelectedThreadRunning();
@@ -134,17 +129,26 @@ export default function SessionPage() {
   const selectedFile = useSelectedFile();
   const selectedRevision = useSelectedRevision();
   const isMobile = useIsMobile();
-  const isDesktop = useIsDesktop();
   useSessionStream(id);
   useRunStateSync(snapshot?.active_run);
   useAutoSshConnect(id, entry?.summary);
-  const behavior = entry?.summary.behavior ?? snapshot?.metadata.behavior ?? "orchestrator";
-  const panelPolicy = sessionPanelPolicy(behavior, snapshot?.lineage?.kind);
-  const sessionPanels = panelPolicy.mobilePanels;
+  // An omitted behavior on a loaded session is the legacy orchestrator. An
+  // unloaded session is not that default: painting Threads/Files/Worksets and
+  // then replacing them is a flash.
+  const behaviorKnown = entry != null || snapshot != null;
+  const behavior: SessionBehavior | null = behaviorKnown
+    ? (entry?.summary.behavior ?? snapshot?.metadata.behavior ?? "orchestrator")
+    : null;
+  const panelPolicy =
+    behavior == null ? null : sessionPanelPolicy(behavior, snapshot?.lineage?.kind);
+  const sessionPanels = panelPolicy?.mobilePanels ?? [];
   const requestedPanel = isSessionPanel(panel) ? panel : DEFAULT_SESSION_PANEL;
-  const effectivePanel = sessionPanels.includes(requestedPanel)
-    ? requestedPanel
-    : panelPolicy.defaultPanel;
+  const effectivePanel =
+    panelPolicy == null
+      ? requestedPanel
+      : panelPolicy.mobilePanels.includes(requestedPanel)
+        ? requestedPanel
+        : panelPolicy.defaultPanel;
 
   useEffect(() => {
     if (!id || !snapshot || !isSessionPanel(panel) || panel === effectivePanel) return;
@@ -162,12 +166,20 @@ export default function SessionPage() {
     resetSessionSelection();
   }, [id]);
 
-  if (entry) {
-    const nextProjectId = entry.summary.project_id ?? null;
-    if (heldProjectId !== nextProjectId) {
-      setHeldProjectId(nextProjectId);
-    }
-  }
+  const projectKey = entry ? (entry.summary.project_id ?? "") : null;
+  useLayoutEffect(() => {
+    unbindSidePanelProject();
+    if (projectKey == null) return;
+    bindSidePanelProject(projectKey);
+  }, [id, projectKey]);
+
+  // Restored after paint, so the launch open has already landed at full width
+  // and putting the tween back does not replay it.
+  useEffect(() => {
+    if (animateSidePanel) return undefined;
+    const frame = requestAnimationFrame(() => setSidePanelAnimate(true));
+    return () => cancelAnimationFrame(frame);
+  }, [animateSidePanel]);
 
   if (!id) return <Navigate to={routes.list()} replace />;
   if (!isSessionPanel(panel)) {
@@ -213,132 +225,112 @@ export default function SessionPage() {
     <SessionSideBox
       sessionId={id}
       snapshot={snapshot}
+      behavior={behavior}
       panel={effectivePanel}
       onPanelChange={goToPanel}
-      sessions={allSessions}
-      projects={allProjects}
     />
   );
 
-  // If the open id has just left the list, keep the project's tabs until the
-  // router lands on a sibling. Hash history applies that navigation on a later
-  // tick than the cache update.
-  const projectId = (entry ? entry.summary.project_id : heldProjectId) ?? null;
-  const projectSessions = projectId
-    ? primarySessions(allSessions)
-        .filter((session) => session.summary.project_id === projectId)
-        .sort((a, b) => parseStoreTime(b.summary.updated_at) - parseStoreTime(a.summary.updated_at))
-    : [];
-
   return (
-    <section className="relative flex h-full min-h-0 overflow-hidden bg-elevation-ground">
-      {/* A phone has no room for the split: the chat takes the screen and the
-          box comes up as the dialog below instead. */}
-      {isMobile ? null : (
-        <>
-          {/* Yields the box's half of the row to the chat as the box slides away. */}
-          <div
-            className={cn(
-              "h-full shrink-0 transition-[width] duration-150 ease-out",
-              collapsed
-                ? "w-0"
-                : effectivePanel === "sessions" && isDesktop
-                  ? "w-[320px]"
-                  : "w-1/2",
+    <section className="relative flex min-h-0 min-w-0 flex-1 h-full overflow-hidden bg-elevation-ground">
+      <div className="relative flex flex-1 min-w-0 h-full min-h-0">
+        <div
+          className={cn(
+            "flex flex-col items-center flex-1 min-w-0 h-full",
+            isMobile ? "px-0" : "px-2",
+          )}
+        >
+          <div className="flex flex-col flex-1 min-h-0 w-full relative">
+            {isMobile && (entry?.lineage ?? snapshot?.lineage) ? (
+              <div className="pointer-events-none absolute inset-x-0 top-16 z-20 flex items-center px-3 pt-2">
+                <Button
+                  className="pointer-events-auto relative"
+                  size={ButtonSize.Small}
+                  variant={ButtonVariant.Ghost}
+                  onClick={() => {
+                    const parentId = (entry?.lineage ?? snapshot?.lineage)?.parent_session_id;
+                    if (parentId) navigate(routes.session(parentId, "delegated"));
+                  }}
+                >
+                  Parent chat
+                </Button>
+              </div>
+            ) : null}
+            {isMobile ? null : (
+              <TopSingleSessionHeader sessionId={id} snapshot={snapshot} entry={entry} />
             )}
-          />
+            <Transcript
+              sessionId={id}
+              snapshot={snapshot}
+              panel={effectivePanel}
+              onFocusPanel={focusPanel}
+              errorNotice={errorNotice}
+            />
 
-          {/*
-            Pinned to half the section rather than laid out in the row: a box
-            that kept its width while the row shrank would reflow its whole tree
-            over the animation, so it slides out at full size instead.
-          */}
-          <div
-            className={cn(
-              "absolute inset-y-0 left-0 flex flex-col min-w-0",
-              effectivePanel === "sessions" && isDesktop ? "w-[320px]" : "w-1/2",
-              "pt-[56px] pb-2 pl-2 pr-2 xl:pr-6",
-              "transition-transform duration-150 ease-out",
-              collapsed && "-translate-x-full",
-            )}
-            aria-hidden={collapsed}
-            inert={collapsed}
-          >
             <div
               className={cn(
-                "flex flex-col flex-1 min-h-0 transition-opacity duration-150 ease-out",
-                collapsed && "opacity-0",
+                "absolute bottom-0 left-0 right-0",
+                // The phone composer paints its own ground fade and owns its
+                // padding, so it has to reach past the column's inset.
+                isMobile ? "-mx-2" : "pb-2 mx-auto max-w-[720px]",
               )}
             >
-              {/* While the dialog is up it owns the panels, so this half stays
-                  empty behind the scrim instead of running them twice. */}
-              <div className="flex-1 min-h-0">{expanded ? null : sideBox}</div>
+              <ChatInputBox sessionId={id} snapshot={snapshot} entry={entry} />
             </div>
           </div>
-        </>
-      )}
-
-      <div
-        className={cn(
-          "flex flex-col items-center flex-1 min-w-0 h-full",
-          "transition-[padding] duration-150 ease-out",
-          isMobile ? "px-0" : collapsed ? "pl-2 pr-2" : isDesktop ? "pl-6 pr-2" : "pl-2 pr-2",
-        )}
-      >
-        {/* The phone reaches the same chats through the header's sheet; there
-            is no width here for a strip of tabs. The padding clears the fixed
-            52px header the shell puts above everything. */}
-        {isMobile ? null : (
-          <div className="w-full shrink-0 pt-[60px]">
-            <ProjectSessionTabs
-              projectId={projectId}
-              sessions={projectSessions}
-              activeSessionId={id}
-              summary={entry?.summary ?? null}
-              leading={
-                collapsed ? (
-                  <Tooltip title="Show panel" position={TooltipPosition.BottomRight}>
-                    <Button
-                      size={ButtonSize.Medium}
-                      variant={ButtonVariant.Ghost}
-                      content={ButtonContent.Icon}
-                      aria-label="Show panel"
-                      onClick={toggleSidePanelCollapsed}
-                    >
-                      <Icon iconName={IconName.OpenSidebar} />
-                    </Button>
-                  </Tooltip>
-                ) : null
-              }
-            />
-          </div>
-        )}
-
-        <SessionIdentity
-          behavior={entry?.summary.behavior ?? snapshot?.metadata.behavior ?? null}
-          lineage={snapshot?.lineage ?? null}
-        />
-
-        <div className="flex flex-col flex-1 min-h-0 w-full relative">
-          <Transcript
-            sessionId={id}
-            snapshot={snapshot}
-            panel={effectivePanel}
-            onFocusPanel={focusPanel}
-            errorNotice={errorNotice}
-          />
-
-          <div
-            className={cn(
-              "absolute bottom-0 left-0 right-0",
-              // The phone composer paints its own ground fade and owns its
-              // padding, so it has to reach past the column's inset.
-              isMobile ? "-mx-2" : "pb-2 mx-auto max-w-[840px]",
-            )}
-          >
-            <ChatInputBox sessionId={id} snapshot={snapshot} entry={entry} />
-          </div>
         </div>
+
+        {isMobile ? null : (
+          <>
+            {/*
+              Same motion as the left sidebar: the column width is what the chat
+              lays out against, and the panel slides over the rail that stays.
+            */}
+            <div
+              className={cn(
+                "relative h-full shrink-0",
+                animateSidePanel && "transition-[width] duration-500 ease-in-out",
+                collapsed ? "w-[52px]" : "w-1/2",
+              )}
+              style={animateSidePanel ? undefined : { transition: "none" }}
+            >
+              {collapsed ? (
+                <div className="absolute inset-y-0 right-0 w-[52px]">
+                  <RightSidebarRail
+                    sessionId={id}
+                    snapshot={snapshot}
+                    behavior={behavior}
+                    panels={panelPolicy?.widePanels ?? []}
+                    onOpen={toggleSidePanelCollapsed}
+                    onSelect={focusPanel}
+                  />
+                </div>
+              ) : null}
+            </div>
+            {/*
+            Pinned to the right edge rather than laid out in the row: a box
+            that kept its width while the row shrank would reflow its whole tree
+            over the animation, so it slides out at full size instead. It fills
+            that column edge to edge.
+          */}
+            <div
+              className={cn(
+                "absolute inset-y-0 right-0 z-[1] flex flex-col min-w-0 w-1/2",
+                animateSidePanel && "transition-transform duration-500 ease-in-out",
+                collapsed && "translate-x-full",
+              )}
+              style={animateSidePanel ? undefined : { transition: "none" }}
+              aria-hidden={collapsed}
+              inert={collapsed}
+            >
+              <div className="flex flex-col flex-1 min-h-0">
+                {/* While the dialog is up it owns the panels, so this half stays
+                  empty behind the scrim instead of running them twice. */}
+                <div className="flex-1 min-h-0">{expanded ? null : sideBox}</div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {isMobile ? (
@@ -398,15 +390,17 @@ export default function SessionPage() {
           bodyClassName="!p-0 relative flex flex-col overflow-hidden"
         >
           <div className="flex flex-col flex-1 min-h-0">{sideBox}</div>
-          <MobileBottomBar
-            panel={effectivePanel}
-            panels={sessionPanels}
-            onPanelChange={(next) => {
-              // A fresh tab opens on the row it already has, not its list.
-              showSidePanelList(false);
-              goToPanel(next);
-            }}
-          />
+          {sessionPanels.length > 0 ? (
+            <MobileBottomBar
+              panel={effectivePanel}
+              panels={sessionPanels}
+              onPanelChange={(next) => {
+                // A fresh tab opens on the row it already has, not its list.
+                showSidePanelList(false);
+                goToPanel(next);
+              }}
+            />
+          ) : null}
         </Modal>
       ) : (
         <Modal

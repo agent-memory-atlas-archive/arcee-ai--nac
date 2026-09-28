@@ -1,3 +1,4 @@
+import { IconName } from "@/app/atoms/icon";
 import type { SessionPanel } from "@/app/lib/routes";
 import type { SessionBehavior, SessionLineage } from "@/app/types/api";
 
@@ -31,7 +32,7 @@ export const SESSION_BEHAVIORS: readonly SessionBehaviorPresentation[] = [
     editsDirectly: true,
     editing: "The top-level agent edits files and runs commands directly.",
     delegation: "It can launch fresh-context traditional coding agents.",
-    inspection: "Delegated work shows those traditional child sessions.",
+    inspection: "Subagents shows those traditional child sessions.",
   },
   {
     id: "direct-with-orchestrator",
@@ -41,7 +42,7 @@ export const SESSION_BEHAVIORS: readonly SessionBehaviorPresentation[] = [
     editsDirectly: true,
     editing: "The top-level agent edits files and runs commands directly.",
     delegation: "It can launch traditional coding agents and separate NAC orchestrator sessions.",
-    inspection: "Delegated work keeps both delegated topologies distinct.",
+    inspection: "Subagents keeps both delegated topologies distinct.",
   },
 ];
 
@@ -55,6 +56,18 @@ export function sessionBehaviorLabel(behavior: SessionBehavior): string {
   return sessionBehaviorPresentation(behavior).label;
 }
 
+/** Leading glyph on a chat row. Matches the new-session choices. */
+export function sessionBehaviorIcon(behavior: SessionBehavior | null | undefined): IconName {
+  switch (behavior) {
+    case "direct":
+      return IconName.Plane;
+    case "direct-with-orchestrator":
+      return IconName.PlaneAdd;
+    default:
+      return IconName.Orchestrator;
+  }
+}
+
 export interface SessionPanelPolicy {
   widePanels: readonly SessionPanel[];
   mobilePanels: readonly SessionPanel[];
@@ -63,23 +76,23 @@ export interface SessionPanelPolicy {
 }
 
 const ORCHESTRATOR_PANELS: SessionPanelPolicy = {
-  widePanels: ["sessions", "threads", "files", "worksets"],
-  mobilePanels: ["sessions", "threads", "files", "worksets", "history"],
-  defaultPanel: "sessions",
+  widePanels: ["threads", "files", "worksets"],
+  mobilePanels: ["threads", "files", "worksets", "history"],
+  defaultPanel: "files",
   readOnly: false,
 };
 
 const DIRECT_PANELS: SessionPanelPolicy = {
-  widePanels: ["sessions", "delegated", "files"],
-  mobilePanels: ["sessions", "delegated", "files", "history"],
-  defaultPanel: "sessions",
+  widePanels: ["delegated", "files"],
+  mobilePanels: ["delegated", "files", "history"],
+  defaultPanel: "files",
   readOnly: false,
 };
 
 const TRADITIONAL_CHILD_PANELS: SessionPanelPolicy = {
-  widePanels: ["sessions", "files"],
-  mobilePanels: ["sessions", "files", "history"],
-  defaultPanel: "sessions",
+  widePanels: ["files"],
+  mobilePanels: ["files", "history"],
+  defaultPanel: "files",
   readOnly: true,
 };
 
