@@ -315,6 +315,7 @@ pub struct SessionManager {
 struct SessionManagerInner {
     root_cwd: PathBuf,
     store_path: PathBuf,
+    _store_ownership: application::persistence::StoreOwnership,
     worker_executable: PathBuf,
     managed_host: Option<nac_managed::ManagedHostConfig>,
     managed_model: Option<application::managed::ManagedModelProfile>,
@@ -484,6 +485,11 @@ impl SessionManager {
         &self.inner.root_cwd
     }
 
+    #[cfg(test)]
+    fn new_unowned_fixture(options: ServerOptions) -> Result<Self> {
+        application::persistence::without_store_ownership(|| Self::new(options))
+    }
+
     pub fn new(options: ServerOptions) -> Result<Self> {
         if options.managed_host.is_some() {
             // Managed construction is the security boundary, including for
@@ -502,6 +508,7 @@ impl SessionManager {
             &config,
             build_identity::store_track(),
         );
+        let store_ownership = application::persistence::StoreOwnership::acquire(&store_path)?;
         let worker_executable = executable::worker_executable(options.worker_executable)?;
 
         // This is deliberately before any managed model, credential, clone,
@@ -557,6 +564,7 @@ impl SessionManager {
             inner: Arc::new(SessionManagerInner {
                 root_cwd,
                 store_path: store_path.clone(),
+                _store_ownership: store_ownership,
                 worker_executable,
                 managed_host: options.managed_host,
                 managed_model,

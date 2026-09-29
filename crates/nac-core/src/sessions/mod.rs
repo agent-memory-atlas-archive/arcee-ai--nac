@@ -15,6 +15,7 @@ mod codec;
 mod db;
 mod operation_lease;
 mod snapshot;
+mod store_process_lease;
 mod summary;
 
 pub use db::MALFORMED_LIGHT_MODEL_DIAGNOSTIC;
@@ -35,6 +36,7 @@ pub use operation_lease::{
     SessionOperationLeaseValidationError, SessionRelationshipLease, SessionResourceLease,
     SessionResourceMutationLease, WorkspaceActivityLease, WorkspaceMutationLease,
 };
+pub use store_process_lease::{StoreProcessLease, StoreProcessLeaseError};
 // Compatibility aliases for callers that have not yet adopted operation-wide naming.
 pub type SessionRunLease = SessionOperationLease;
 pub type SessionRunLeaseError = SessionOperationLeaseError;

@@ -432,7 +432,7 @@ fn secure_lock_path(canonical_store: &Path, session_id: &str) -> anyhow::Result<
     secure_lock_path_with_suffix(canonical_store, session_id, ".lock")
 }
 
-fn secure_lock_path_with_suffix(
+pub(super) fn secure_lock_path_with_suffix(
     canonical_store: &Path,
     session_id: &str,
     suffix: &str,
@@ -498,7 +498,7 @@ fn secure_create_lock_dir(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn secure_open_lock_file(path: &Path) -> anyhow::Result<File> {
+pub(super) fn secure_open_lock_file(path: &Path) -> anyhow::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
 
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn process_death_releases_lease() {
+    fn stale_session_owner_is_fenced_until_process_death_then_restart_acquires() {
         let store_path = test_store("process_death");
         store::initialize(&store_path).unwrap();
         let ready_path = store_path.parent().unwrap().join("ready");
