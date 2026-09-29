@@ -73,9 +73,38 @@ impl StoreProcessLease {
 }
 
 fn canonical_store_identity(store_path: &Path) -> anyhow::Result<PathBuf> {
+    canonical_store_identity_with_symlink_budget(store_path, 40)
+}
+
+fn canonical_store_identity_with_symlink_budget(
+    store_path: &Path,
+    remaining_symlinks: usize,
+) -> anyhow::Result<PathBuf> {
     match fs::canonicalize(store_path) {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if fs::symlink_metadata(store_path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                anyhow::ensure!(
+                    remaining_symlinks > 0,
+                    "store path contains too many symbolic links"
+                );
+                let target = fs::read_link(store_path)?;
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    store_path
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(target)
+                };
+                return canonical_store_identity_with_symlink_budget(
+                    &target,
+                    remaining_symlinks - 1,
+                );
+            }
             let file_name = store_path.file_name().ok_or_else(|| {
                 anyhow::anyhow!("store path has no file name: {}", store_path.display())
             })?;
@@ -144,6 +173,27 @@ mod tests {
     fn aliases_resolve_to_one_canonical_store_owner() {
         let store_path = test_store("alias");
         crate::store::initialize(&store_path).unwrap();
+        let alias = store_path.parent().unwrap().join("store-alias.db");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&store_path, &alias).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&store_path, &alias).unwrap();
+
+        let owner = StoreProcessLease::try_acquire(&store_path).unwrap();
+        assert!(matches!(
+            StoreProcessLease::try_acquire(&alias),
+            Err(StoreProcessLeaseError::Busy)
+        ));
+
+        drop(owner);
+        let _ = fs::remove_dir_all(store_path.parent().unwrap());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn dangling_alias_resolves_to_the_absent_target_store_owner() {
+        let store_path = test_store("dangling_alias");
+        fs::create_dir_all(store_path.parent().unwrap()).unwrap();
         let alias = store_path.parent().unwrap().join("store-alias.db");
         #[cfg(unix)]
         std::os::unix::fs::symlink(&store_path, &alias).unwrap();
