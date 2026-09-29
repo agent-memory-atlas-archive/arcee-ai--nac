@@ -111,6 +111,8 @@ export function useDelegatedPreviewStream(sessionId: string | null): DelegatedPr
       onReplayBoundary: reloadSnapshot,
       onReplayGap: reloadSnapshot,
       onLagged: reloadSnapshot,
+      onSequenceGap: reloadSnapshot,
+      onBackpressure: reloadSnapshot,
     });
 
     return () => {

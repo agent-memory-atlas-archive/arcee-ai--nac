@@ -23,15 +23,20 @@ describe("managed upgrade transport", () => {
 
     await api.startManagedUpgrade("browser-upgrade-request-0001");
 
-    expect(fetch).toHaveBeenCalledExactlyOnceWith("/__managed/control/v0/upgrade", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Idempotency-Key": "browser-upgrade-request-0001",
-      },
-      body: "{}",
-      signal: undefined,
-    });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      "/__managed/control/v0/upgrade",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+          "idempotency-key": "browser-upgrade-request-0001",
+          "x-nac-request-id": expect.any(String),
+        }),
+        body: "{}",
+        signal: undefined,
+      }),
+    );
   });
 
   it("reads facade problem titles without exposing the raw response object", async () => {

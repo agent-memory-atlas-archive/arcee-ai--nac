@@ -229,6 +229,8 @@ export function useSessionStream(sessionId: string | null): void {
       },
       onReplayGap: replaceAfterReplayLoss,
       onLagged: replaceAfterReplayLoss,
+      onSequenceGap: replaceAfterReplayLoss,
+      onBackpressure: replaceAfterReplayLoss,
     });
 
     return () => {
@@ -276,6 +278,8 @@ export function useDelegatedPermissionStream(sessionId: string, enabled: boolean
       onReplayBoundary: refresh,
       onReplayGap: refresh,
       onLagged: refresh,
+      onSequenceGap: refresh,
+      onBackpressure: refresh,
     });
     return dispose;
   }, [client, enabled, sessionId]);

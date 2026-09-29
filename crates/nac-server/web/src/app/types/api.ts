@@ -24,6 +24,8 @@ export type LightModelSettings = ApiSchema<"LightModelSettings">;
 
 export type StoreInfo = ApiSchema<"StoreInfo">;
 
+export type ReadinessResponse = ApiSchema<"ReadinessResponse">;
+
 export type ManagedReadinessCheck = ApiSchema<"ReadinessCheck">;
 export type ManagedHostStatus = ApiSchema<"ManagedHostStatusResponse">;
 export type ManagedGitHubStatus = ApiSchema<"GitHubStatusResponse">;
