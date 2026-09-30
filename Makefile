@@ -141,6 +141,8 @@ test-e2e-remote:
 
 ## Run focused deterministic lifecycle and crash-window regressions
 test-durability:
+	$(CARGO) test --locked -p nac-core store::worker_dispatches
+	$(CARGO) test --locked -p nac-core host_completion_protocol
 	$(CARGO) test --locked -p nac-core store_process_lease
 	$(CARGO) test --locked -p nac-core stale_session_owner_is_fenced_until_process_death_then_restart_acquires
 	$(CARGO) test --locked -p nac-core current_schema_initialize_is_byte_exact_and_does_not_enter_a_writer_transaction

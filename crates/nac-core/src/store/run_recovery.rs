@@ -319,6 +319,7 @@ fn reconcile_active_run_inner(path: &Path, session_id: &str) -> Result<ActiveRun
     let mut connection = open_runtime_connection(path)?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    super::worker_dispatches::recover_worker_dispatches(&transaction, session_id)?;
     let Some(record) = load_run_recovery_with_connection(&transaction, session_id)? else {
         transaction.commit()?;
         return Ok(ActiveRunReconciliation::None);

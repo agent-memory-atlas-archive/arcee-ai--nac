@@ -1,4 +1,6 @@
 use super::*;
+#[path = "managed_load/worker_completion.rs"]
+mod worker_completion;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -783,6 +785,7 @@ async fn managed_load_scenario() {
         "worker binary does not exist: {}",
         worker.display()
     );
+    worker_completion::exercise_worker_ack_boundaries(&worker).await;
     let seed = std::env::var("NAC_MANAGED_LOAD_SEED")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -1672,15 +1675,11 @@ async fn run_variant_with_mode(
             assert_eq!(kinds.first().map(String::as_str), Some("thread_started"));
         }
         event_kinds.push(kinds);
-        let episodes =
-            nac_core::store::thread_read(&store_path, &entry.session_id, &entry.worker_thread)
-                .unwrap();
-        assert!(episodes.len() <= 1);
-        if mode == LoadMode::OrderedHealthy {
-            assert_eq!(episodes.len(), 1);
-            assert_eq!(episodes[0].status, "ok");
-        }
-        worker_episode_counts.push(episodes.len());
+        worker_episode_counts.push(worker_completion::assert_receipt(
+            &store_path,
+            entry,
+            mode == LoadMode::OrderedHealthy,
+        ));
         let relation = relations
             .iter()
             .find(|record| record.orchestrator_session_id == entry.session_id)

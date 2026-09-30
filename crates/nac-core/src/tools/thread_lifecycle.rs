@@ -140,6 +140,10 @@ impl ActiveThreadRegistry {
         self.lock().dispatches.contains_key(thread_name)
     }
 
+    pub(crate) fn run_id(&self) -> Option<String> {
+        self.lock().run_id.clone()
+    }
+
     pub fn begin_run(&self, run_id: &str) -> bool {
         let mut state = self.lock();
         if !state.dispatches.is_empty() {

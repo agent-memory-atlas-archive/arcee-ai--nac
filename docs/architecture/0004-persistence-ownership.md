@@ -63,11 +63,37 @@ An in-memory lock may reduce duplicate work inside one process, but correctness
 must come from transactions, revision checks, generation checks, durable lease
 state, idempotency keys, or equivalent store-enforced preconditions.
 
-Worker subprocesses are a temporary direct-writer compatibility path, not an
-independent durable ownership model. The bounded persistence coordinator will
-make the host process the commit-and-ack owner; workers will return mutation
-intent with session/run/generation identity. This decision does not implement
-that coordinator or change worker protocol yet.
+### Worker episode commits
+
+The host owns durable worker episode completion. Before spawning a worker it
+admits a dispatch with session, thread, dispatch UUID, current session run, and
+monotonic thread generation. The worker sends a versioned structured completion
+on stdout. Only the admitted identity can append; the host supplies the action
+from its durable admission rather than accepting database commands from a
+frame. Episode and terminal dispatch receipt commit in one transaction.
+
+An exact replay returns the original episode identity. Conflicting content,
+unknown identities, newer thread generations, and replaced or terminal session
+runs reject an uncommitted result. Session/thread deletion removes receipts so
+a late completion cannot recreate the deleted history. Session recovery under
+its operation lease terminalizes pending dispatches once as interrupted errors;
+it retains committed episodes even when the acknowledgement or worker exit was
+lost. Committed results are durable facts, while delivery of the ack remains a
+pipe observation.
+
+The host acknowledges only after commit. The worker waits for that exact ack
+before stdout answer/exit success or its terminal `RunFinished` event. Existing
+model/tool events and usage stream during execution. Cancellation and timeout
+fence pending commits and clean the process tree; a commit that won the fence
+remains retained. Malformed, mismatched, oversized, closed-pipe, and commit
+failure paths fail explicitly and clean up without a success ack. Completion
+frames are limited to 4 MiB and control frames to 16 KiB; native credentials
+retain their separate private socket and exact-value redaction.
+
+Workers retain existing store-backed context/steering behavior, but do not
+append completed episodes or initialize schema. This is the narrow ALL-113
+protocol, not the general ALL-116 persistence coordinator. It does not move
+top-level transcript ownership or select an engine.
 
 ### Engine split and convergence
 
