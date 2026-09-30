@@ -82,7 +82,8 @@ lost. Committed results are durable facts, while delivery of the ack remains a
 pipe observation.
 
 The host acknowledges only after commit. The worker waits for that exact ack
-before stdout answer/exit success or its terminal `RunFinished` event. Existing
+before exit success or its terminal `RunFinished` event. The host returns the
+canonical committed answer; worker stdout carries only structured completions. Existing
 model/tool events and usage stream during execution. Cancellation and timeout
 fence pending commits and clean the process tree; a commit that won the fence
 remains retained. Malformed, mismatched, oversized, closed-pipe, and commit

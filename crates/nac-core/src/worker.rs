@@ -159,7 +159,7 @@ async fn run_managed_worker_with_credentials(
         Some((completion.clone(), ack_tx)),
     );
     let response = produce_worker_response(run_config, credentials).await?;
-    completion.content = response.clone();
+    completion.content = response;
     use std::io::Write;
     std::io::stdout()
         .lock()
@@ -173,7 +173,6 @@ async fn run_managed_worker_with_credentials(
     crate::events::EventSink::stderr_prefixed().emit(crate::events::AgentEvent::RunFinished {
         thread_name: Some(completion.thread_name),
     });
-    println!("{response}");
     Ok(())
 }
 

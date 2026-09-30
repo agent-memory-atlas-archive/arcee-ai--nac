@@ -26,12 +26,23 @@ pub(super) fn assert_receipt(path: &Path, entry: &PlannedOrchestrator, healthy: 
 }
 
 pub(super) async fn exercise_worker_ack_boundaries(worker: &Path) {
-    for outcome in ["pipe_closed", "wrong_ack", "cancel", "worker_crash"] {
+    for outcome in [
+        "pipe_closed",
+        "wrong_ack",
+        "cancel",
+        "worker_crash",
+        "prefix_answer",
+    ] {
         let root = temp_root(&format!("all113_ack_{outcome}"));
         let nac_home = root.join("nac-home");
         std::fs::create_dir_all(&nac_home).unwrap();
         let _env = ScopedModelEnv::isolated(&nac_home, Some("all113-fake-model-key"));
-        let (base_url, requests) = scripted_direct_responses(&["worker answer"]);
+        let answer = if outcome == "prefix_answer" {
+            "__NAC_COMPLETION_V1__hello"
+        } else {
+            "worker answer"
+        };
+        let (base_url, requests) = scripted_direct_responses(&[answer]);
         seed_load_parent(&root, base_url.clone());
         let path = root.join("store.db");
         let mut child = tokio::process::Command::new(worker)
@@ -77,7 +88,7 @@ pub(super) async fn exercise_worker_ack_boundaries(worker: &Path) {
             .expect("structured completion frame");
         let frame: serde_json::Value = serde_json::from_str(payload).unwrap();
         assert_eq!(frame["dispatch_id"], "ack-boundary");
-        assert_eq!(frame["content"], "worker answer");
+        assert_eq!(frame["content"], answer);
         assert_eq!(requests.recv_timeout(PHASE_TIMEOUT).unwrap(), 0);
         assert!(
             child.try_wait().unwrap().is_none(),
@@ -99,6 +110,7 @@ pub(super) async fn exercise_worker_ack_boundaries(worker: &Path) {
             }
         }
         match outcome {
+            "prefix_answer" => child.stdin.as_mut().unwrap().write_all(b"__NAC_COMMIT_ACK_V1__{\"session_id\":\"all112-parent\",\"thread_name\":\"worker\",\"dispatch_id\":\"ack-boundary\",\"episode_id\":1}\n").await.unwrap(),
             "wrong_ack" => child.stdin.as_mut().unwrap().write_all(b"__NAC_COMMIT_ACK_V1__{\"session_id\":\"wrong\",\"thread_name\":\"worker\",\"dispatch_id\":\"ack-boundary\",\"episode_id\":1}\n").await.unwrap(),
             "cancel" => child.stdin.as_mut().unwrap().write_all(b"cancel\n").await.unwrap(),
             "worker_crash" => child.start_kill().unwrap(),
@@ -109,7 +121,7 @@ pub(super) async fn exercise_worker_ack_boundaries(worker: &Path) {
             .unwrap()
             .unwrap();
         assert!(
-            !status.success(),
+            status.success() == (outcome == "prefix_answer"),
             "{outcome}: unacknowledged worker must fail"
         );
         let mut stderr = String::new();
@@ -121,8 +133,14 @@ pub(super) async fn exercise_worker_ack_boundaries(worker: &Path) {
             .await
             .unwrap();
         assert!(
-            !stderr.contains("\"type\":\"run_finished\""),
+            stderr.contains("\"type\":\"run_finished\"") == (outcome == "prefix_answer"),
             "no terminal success event before acknowledgement"
+        );
+        let mut remaining_stdout = String::new();
+        stdout.read_to_string(&mut remaining_stdout).await.unwrap();
+        assert!(
+            remaining_stdout.is_empty(),
+            "answer text cannot be echoed onto the protocol pipe"
         );
         assert!(
             nac_core::store::thread_dispatches(&path, "all112-parent", "worker")
