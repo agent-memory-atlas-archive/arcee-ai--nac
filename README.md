@@ -129,8 +129,10 @@ per-worktree or per-branch store rather than a shared development database.
 The local verification lanes are `make test-web` for frontend unit/component
 tests, `make test-e2e` for isolated real-browser tests against the embedded
 server and a credential-free scripted model, and `make test-durability` for the
-focused lifecycle/crash-window regressions. Install the E2E browser once with
-`npm --prefix crates/nac-server/web exec -- playwright install chromium`.
+focused lifecycle/crash-window regressions. `make test-managed-load` runs the
+bounded deterministic 1/2/4-orchestrator load and fault scenario described in
+[the managed-load guide](docs/managed/deterministic-load.md). Install the E2E
+browser once with `npm --prefix crates/nac-server/web exec -- playwright install chromium`.
 `make ci` is the portable unit, lint, formatting, and committed-asset lane.
 Run `make test-e2e` as the matching production-browser release gate and
 `make test-durability` as a faster focused rerun of crash-window contracts that
