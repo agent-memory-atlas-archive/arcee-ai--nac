@@ -18,9 +18,29 @@ barriers prove the requested processes overlap. Each run checks contiguous
 transcripts, exact worker event and episode counts, one terminal settlement and
 one delivered completion per generation, no active recovery obligation, store
 integrity, readiness during both controlled phases, and matching child-process
-start/stop observations. Parent and orchestrator services remain attached for
-the whole burst, making cache lifetime an explicit control rather than a load
-variable.
+start/stop observations. Child admission is staged in plan order until each
+orchestrator reaches the initial model barrier. After all worker processes are
+simultaneously observed at the worker barrier, model responses and terminal
+settlements are released one plan ordinal at a time, only after the preceding
+parent completion reaches its model acknowledgement. The claimed overlap is
+therefore the explicitly observed blocked-worker phase, not child attachment,
+completion delivery, settlement, or parent-session mutation. Parent and
+orchestrator services remain attached for the whole burst, making cache
+lifetime an explicit control rather than a load variable.
+
+A separately named four-way `concurrent_child_attachment_and_settlement_probe`
+keeps the child attachments pinned but removes terminal-settlement ordering. It
+exercises the observed non-contiguous transcript window and records either
+`reproduced_non_contiguous_transcript_invariant_failure`,
+`reproduced_managed_run_failure_in_concurrent_window`, or
+`completed_without_reproduction`. If the concurrent window does not settle
+within its bounded observation period, the fixture cancels only the
+still-running managed runs and records
+`reproduced_unsettled_managed_run_then_cancelled`. It does not convert any
+observation into a root-cause claim. In every outcome the lane requires terminal
+relationships, delivered inbox items, idle child services, terminal-consistent
+recovery state (clear for completed runs, `failed` for failed runs), matching
+process start/stop telemetry, and a valid store before it writes evidence.
 
 The same invocation also exercises these deterministic failure modes:
 
