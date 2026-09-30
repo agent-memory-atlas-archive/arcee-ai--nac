@@ -15,7 +15,6 @@ mod mcp;
 mod mcp_api;
 mod orchestration;
 mod revert;
-
 pub(crate) use managed_control::running_target as managed_running_target;
 
 pub use compaction::{CompactSessionError, CompactSessionResponse};
