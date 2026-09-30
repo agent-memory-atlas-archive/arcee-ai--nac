@@ -1,7 +1,7 @@
 // Endpoint-aware session SSE client with explicit replay and backpressure policy.
 
 import { perfEpoch, perfMark } from "@/app/lib/perfDebug";
-import { nacClient, type NacClient } from "@/app/services/nacClient";
+import { nacClient, type NacClient, type NacStreamContext } from "@/app/services/nacClient";
 import type {
   AssistantStreamDelta,
   LaggedEvent,
@@ -36,9 +36,14 @@ export interface SessionStreamHandlers {
   onDuplicate?: (event: SessionEventEnvelope) => void;
   onSequenceGap?: (gap: SessionSequenceGap) => void;
   onBackpressure?: (backpressure: SessionBackpressure) => void;
+  onTransportError?: (error: unknown) => void;
 }
 
-export type EventSourceFactory = (url: string, init: EventSourceInit) => EventSource;
+export type EventSourceFactory = (
+  url: string,
+  init: EventSourceInit,
+  context: NacStreamContext,
+) => EventSource;
 
 export interface SessionStreamOptions {
   client?: NacClient;
@@ -85,7 +90,8 @@ export function subscribeToSessionEvents(
   options: SessionStreamOptions = {},
 ): () => void {
   const client = options.client ?? nacClient;
-  const createEventSource = options.eventSource ?? ((url, init) => new EventSource(url, init));
+  const createEventSource = options.eventSource;
+  const nativeEventSourceInit = createEventSource ? null : client.transport.eventSourceInit();
   const maxPendingEvents = Math.max(1, options.maxPendingEvents ?? DEFAULT_MAX_PENDING_EVENTS);
   let source: EventSource | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -118,7 +124,7 @@ export function subscribeToSessionEvents(
     closeSource();
     retryTimer = setTimeout(() => {
       retryTimer = null;
-      connect();
+      startConnect();
     }, retryDelay);
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   };
@@ -155,7 +161,7 @@ export function subscribeToSessionEvents(
     }
   };
 
-  const connect = () => {
+  const connect = async () => {
     if (closed) return;
     setStatus(reconnectCursor === null ? "connecting" : "reconnecting");
 
@@ -166,7 +172,17 @@ export function subscribeToSessionEvents(
       params.set("after_sequence_id", String(reconnectCursor.sequence_id));
     }
     const url = params.size === 0 ? base : `${base}?${params.toString()}`;
-    source = createEventSource(url, client.transport.eventSourceInit());
+    if (createEventSource) {
+      const context = await client.transport.streamContext();
+      if (closed) return;
+      source = createEventSource(
+        url,
+        { withCredentials: context.credentials === "include" },
+        context,
+      );
+    } else {
+      source = new EventSource(url, nativeEventSourceInit ?? undefined);
+    }
 
     source.onopen = () => {
       everOpened = true;
@@ -269,7 +285,16 @@ export function subscribeToSessionEvents(
     };
   };
 
-  connect();
+  function startConnect() {
+    void connect().catch((error: unknown) => {
+      if (closed) return;
+      closeSource();
+      handlers.onTransportError?.(error);
+      setStatus("error");
+    });
+  }
+
+  startConnect();
 
   return () => {
     closed = true;

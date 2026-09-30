@@ -15,7 +15,10 @@ The platform authenticates the one declared owner before traffic reaches NAC.
 NAC has no second ingress authentication layer: every client that reaches the
 service has owner-equivalent control. The service must therefore sit behind an
 authenticated HTTPS gateway, and `NAC_ALLOWED_HOSTS` must contain the exact
-stable public hostname.
+stable public hostname. When an ArceeFM UI is hosted on a different origin,
+`NAC_ALLOWED_ORIGINS` must also contain that exact trusted UI origin; this is a
+CORS and browser-mutation authorization opt-in, not a replacement for gateway
+authentication.
 
 The service and every local agent command share UID/GID `10001:10001`. Every
 generic host secret is added to every newly spawned agent command, including

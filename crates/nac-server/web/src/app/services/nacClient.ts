@@ -40,6 +40,12 @@ export interface NacRequestOptions {
   requestId?: string;
 }
 
+export interface NacStreamContext {
+  credentials: NacCredentialPolicy;
+  headers: Readonly<Record<string, string>>;
+  requestId: string;
+}
+
 export class NacClientConfigurationError extends Error {
   constructor(message: string) {
     super(message);
@@ -226,11 +232,38 @@ export class NacTransport {
         "Native EventSource cannot send bearer authorization; use cookie credentials or an auth-capable stream adapter.",
       );
     }
+    if (this.headerSource !== undefined) {
+      throw new NacClientConfigurationError(
+        "Native EventSource cannot send launch headers; use an auth-capable stream adapter.",
+      );
+    }
     return { withCredentials: this.credentials === "include" };
   }
 
   newRequestId(): string {
     return this.nextRequestId();
+  }
+
+  private async configuredHeaders(requestId: string, headers?: HeadersInit): Promise<Headers> {
+    const baseHeaders =
+      typeof this.headerSource === "function" ? await this.headerSource() : this.headerSource;
+    const requestHeaders = new Headers(baseHeaders);
+    new Headers(headers).forEach((value, key) => requestHeaders.set(key, value));
+    if (this.authorization?.kind === "bearer") {
+      requestHeaders.set("Authorization", `Bearer ${this.authorization.token}`);
+    }
+    requestHeaders.set("X-NAC-Request-ID", requestId);
+    return requestHeaders;
+  }
+
+  async streamContext(): Promise<NacStreamContext> {
+    const requestId = this.newRequestId();
+    const headers = await this.configuredHeaders(requestId);
+    return {
+      credentials: this.credentials,
+      headers: Object.fromEntries(headers.entries()),
+      requestId,
+    };
   }
 
   async request<T>(
@@ -244,17 +277,10 @@ export class NacTransport {
       requestId = this.newRequestId(),
     }: NacRequestOptions = {},
   ): Promise<T> {
-    const baseHeaders =
-      typeof this.headerSource === "function" ? await this.headerSource() : this.headerSource;
-    const requestHeaders = new Headers(baseHeaders);
-    new Headers(headers).forEach((value, key) => requestHeaders.set(key, value));
+    const requestHeaders = await this.configuredHeaders(requestId, headers);
     if (body !== undefined && !requestHeaders.has("Content-Type")) {
       requestHeaders.set("Content-Type", "application/json");
     }
-    if (this.authorization?.kind === "bearer") {
-      requestHeaders.set("Authorization", `Bearer ${this.authorization.token}`);
-    }
-    requestHeaders.set("X-NAC-Request-ID", requestId);
 
     const response = await this.fetchImplementation(this.url(path), {
       method,

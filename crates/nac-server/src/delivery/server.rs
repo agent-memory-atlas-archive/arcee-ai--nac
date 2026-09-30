@@ -1,4 +1,5 @@
 use crate::*;
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 
 pub(crate) fn response_compression_layer() -> CompressionLayer<impl Predicate> {
     CompressionLayer::new()
@@ -37,6 +38,11 @@ impl BindPolicy {
 /// operator's statement that the name is expected to reach this server. `*`
 /// disables the guard entirely.
 pub(crate) const ALLOWED_HOSTS_ENV: &str = "NAC_ALLOWED_HOSTS";
+/// Exact browser origins trusted to control this server, comma-separated.
+///
+/// This is deliberately separate from the host allowlist: naming an ingress
+/// host does not authorize an unrelated browser application to mutate NAC.
+pub(crate) const ALLOWED_ORIGINS_ENV: &str = "NAC_ALLOWED_ORIGINS";
 
 fn configured_allowed_hosts() -> Vec<String> {
     std::env::var(ALLOWED_HOSTS_ENV)
@@ -45,6 +51,50 @@ fn configured_allowed_hosts() -> Vec<String> {
         .map(|entry| entry.trim().to_ascii_lowercase())
         .filter(|entry| !entry.is_empty())
         .collect()
+}
+
+fn normalize_allowed_origin(origin: &str) -> Option<String> {
+    let uri = origin.trim().parse::<axum::http::Uri>().ok()?;
+    let scheme = uri.scheme_str()?;
+    if !matches!(scheme, "http" | "https") || uri.authority().is_none() || uri.query().is_some() {
+        return None;
+    }
+    if !matches!(uri.path(), "" | "/") {
+        return None;
+    }
+    Some(format!("{scheme}://{}", uri.authority()?).to_ascii_lowercase())
+}
+
+fn configured_allowed_origins() -> Vec<String> {
+    std::env::var(ALLOWED_ORIGINS_ENV)
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(normalize_allowed_origin)
+        .collect()
+}
+
+fn origin_is_allowed(origin: &str, allowed: &[String]) -> bool {
+    normalize_allowed_origin(origin)
+        .is_some_and(|origin| allowed.iter().any(|entry| entry == &origin))
+}
+
+fn browser_cors_layer(allowed: &[String]) -> CorsLayer {
+    let origins = allowed
+        .iter()
+        .filter_map(|origin| origin.parse::<axum::http::HeaderValue>().ok());
+    CorsLayer::new()
+        .allow_credentials(true)
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_headers(AllowHeaders::mirror_request())
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::HEAD,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
 }
 
 /// The host name inside a `Host` header, without its port.
@@ -372,7 +422,11 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
 /// Fetch Metadata is browser-controlled. Origin is the fallback for browsers
 /// that omit it; requests carrying neither remain available to non-browser API
 /// clients. Host validation still runs separately for every request.
-async fn reject_cross_origin_mutation(request: axum::extract::Request, next: Next) -> Response {
+async fn reject_cross_origin_mutation(
+    State(allowed): State<Arc<Vec<String>>>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
     if is_safe_method(request.method()) {
         return next.run(request).await;
     }
@@ -381,7 +435,11 @@ async fn reject_cross_origin_mutation(request: axum::extract::Request, next: Nex
     let fetch_site = headers
         .get(header::HeaderName::from_static("sec-fetch-site"))
         .and_then(|value| value.to_str().ok());
-    if matches!(fetch_site, Some("cross-site" | "same-site")) {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    let allowed_origin = origin.is_some_and(|origin| origin_is_allowed(origin, &allowed));
+    if matches!(fetch_site, Some("cross-site" | "same-site")) && !allowed_origin {
         return (
             StatusCode::FORBIDDEN,
             "refusing a cross-origin state-changing browser request",
@@ -390,10 +448,7 @@ async fn reject_cross_origin_mutation(request: axum::extract::Request, next: Nex
     }
 
     if !matches!(fetch_site, Some("same-origin" | "none")) {
-        if let Some(origin) = headers
-            .get(header::ORIGIN)
-            .and_then(|value| value.to_str().ok())
-        {
+        if let Some(origin) = origin {
             let host = headers
                 .get(header::HOST)
                 .and_then(|value| value.to_str().ok())
@@ -403,7 +458,7 @@ async fn reject_cross_origin_mutation(request: axum::extract::Request, next: Nex
                         .authority()
                         .map(axum::http::uri::Authority::as_str)
                 });
-            if !host.is_some_and(|host| origin_matches_host(origin, host)) {
+            if !allowed_origin && !host.is_some_and(|host| origin_matches_host(origin, host)) {
                 return (
                     StatusCode::FORBIDDEN,
                     "refusing a cross-origin state-changing browser request",
@@ -433,7 +488,7 @@ async fn secure_docs(request: axum::extract::Request, next: Next) -> Response {
     info(
         title = "nac-web HTTP API",
         version = env!("NAC_PRODUCT_VERSION"),
-        description = "Live OpenAPI 3.1 contract for nac-web's REST and SSE surface. nac-web binds to loopback by default. Non-loopback binds require --allow-remote and an authenticated, encrypted network boundary; every reachable client receives control equivalent to the local user because the API has no client authentication. IP-literal Host values bypass only the DNS-name allowlist, not authentication. DNS names must be listed in NAC_ALLOWED_HOSTS. Cross-origin browser mutations are rejected independently. Finite JSON responses may be gzip-compressed. The SSE stream is text/event-stream and is never gzip-compressed. Credential values are write-only. /mcp is streamable-HTTP MCP (JSON-RPC), not REST, and is intentionally out of band."
+        description = "Live OpenAPI 3.1 contract for nac-web's REST and SSE surface. nac-web binds to loopback by default. Non-loopback binds require --allow-remote and an authenticated, encrypted network boundary; every reachable client receives control equivalent to the local user because the API has no client authentication. IP-literal Host values bypass only the DNS-name allowlist, not authentication. DNS names must be listed in NAC_ALLOWED_HOSTS. Cross-origin browser control remains denied unless the operator explicitly lists each trusted application origin in NAC_ALLOWED_ORIGINS; that does not replace ingress authentication. Finite JSON responses may be gzip-compressed. The SSE stream is text/event-stream and is never gzip-compressed. Credential values are write-only. /mcp is streamable-HTTP MCP (JSON-RPC), not REST, and is intentionally out of band."
     ),
     components(schemas(
         filesystem::BrowseKind,
@@ -465,6 +520,12 @@ pub fn router(manager: SessionManager) -> Router {
 }
 
 fn secure_public_router(router: Router, manager: SessionManager) -> Router {
+    let allowed_origins = Arc::new(configured_allowed_origins());
+    let router = if allowed_origins.is_empty() {
+        router
+    } else {
+        router.layer(browser_cors_layer(&allowed_origins))
+    };
     router
         .layer(response_compression_layer())
         .layer(middleware::from_fn(record_http_latency))
@@ -472,7 +533,10 @@ fn secure_public_router(router: Router, manager: SessionManager) -> Router {
             manager,
             enforce_managed_admission,
         ))
-        .layer(middleware::from_fn(reject_cross_origin_mutation))
+        .layer(middleware::from_fn_with_state(
+            allowed_origins,
+            reject_cross_origin_mutation,
+        ))
         .layer(middleware::from_fn_with_state(
             Arc::new(configured_allowed_hosts()),
             reject_foreign_host,
@@ -480,17 +544,27 @@ fn secure_public_router(router: Router, manager: SessionManager) -> Router {
 }
 
 fn managed_migration_recovery_router(manager: SessionManager) -> Router {
-    Router::new()
+    let allowed_origins = Arc::new(configured_allowed_origins());
+    let router = Router::new()
         .route("/healthz", get(managed_status::healthz_handler))
         .route("/readyz", get(managed_status::readyz_handler))
         .route(
             "/managed/status",
             get(managed_status::managed_status_handler),
         )
-        .with_state(manager)
+        .with_state(manager);
+    let router = if allowed_origins.is_empty() {
+        router
+    } else {
+        router.layer(browser_cors_layer(&allowed_origins))
+    };
+    router
         .layer(response_compression_layer())
         .layer(middleware::from_fn(record_http_latency))
-        .layer(middleware::from_fn(reject_cross_origin_mutation))
+        .layer(middleware::from_fn_with_state(
+            allowed_origins,
+            reject_cross_origin_mutation,
+        ))
         .layer(middleware::from_fn_with_state(
             Arc::new(configured_allowed_hosts()),
             reject_foreign_host,

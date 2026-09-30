@@ -67,6 +67,11 @@ describe("endpoint and credential policy", () => {
     expect(() => client.transport.eventSourceInit()).toThrow(/cannot send bearer authorization/);
   });
 
+  it("does not silently drop launch headers on native EventSource", () => {
+    const client = createNacClient({ headers: { "X-NAC-Launch": "launch-1" } });
+    expect(() => client.transport.eventSourceInit()).toThrow(/cannot send launch headers/);
+  });
+
   it("decodes structured errors with the correlated request id", async () => {
     const client = createNacClient({
       fetch: vi.fn().mockResolvedValue(json({ title: "Request denied" }, 403)),

@@ -70,6 +70,41 @@ it("uses an explicit remote endpoint and cookie credential policy", () => {
   dispose();
 });
 
+it("passes bearer and launch context to an injected stream adapter", async () => {
+  const client = createNacClient({
+    endpoint: "https://nac.example/runtime/v1",
+    credentials: "omit",
+    authorization: { kind: "bearer", token: "gateway-token" },
+    headers: async () => ({ "X-NAC-Launch": "launch-1" }),
+    requestId: () => "stream-request-1",
+  });
+  const eventSource = vi.fn((url: string, init: EventSourceInit) => {
+    return new FakeEventSource(url, init) as unknown as EventSource;
+  });
+
+  const dispose = subscribeToSessionEvents(
+    "session-a",
+    { onEnvelope: vi.fn() },
+    { client, eventSource },
+  );
+
+  await vi.waitFor(() => expect(eventSource).toHaveBeenCalledOnce());
+  expect(eventSource).toHaveBeenCalledWith(
+    "https://nac.example/runtime/v1/sessions/session-a/events/stream",
+    { withCredentials: false },
+    {
+      credentials: "omit",
+      headers: {
+        authorization: "Bearer gateway-token",
+        "x-nac-launch": "launch-1",
+        "x-nac-request-id": "stream-request-1",
+      },
+      requestId: "stream-request-1",
+    },
+  );
+  dispose();
+});
+
 it("reconnects with the epoch and sequence as one cursor", async () => {
   const dispose = subscribeToSessionEvents("session-a", {
     onEnvelope: vi.fn(),

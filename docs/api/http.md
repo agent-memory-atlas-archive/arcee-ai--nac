@@ -184,6 +184,20 @@ NAC_ALLOWED_HOSTS=nac.internal.example \
   nac-web --bind 192.168.1.20:3210 --allow-remote --no-open
 ```
 
-nac-web also rejects cross-origin browser mutations using Fetch Metadata and
-Origin headers. That protects against hostile web pages; it is not a substitute
-for authenticating network clients.
+nac-web also rejects cross-origin browser control using Fetch Metadata and
+Origin headers. A separately hosted trusted UI may opt in by listing its exact
+origin in `NAC_ALLOWED_ORIGINS`; multiple origins are comma-separated:
+
+```sh
+NAC_ALLOWED_HOSTS=nac.internal.example \
+NAC_ALLOWED_ORIGINS=https://app.example.com \
+  nac-web --bind 192.168.1.20:3210 --allow-remote --no-open
+```
+
+Only exact `http` or `https` origins are accepted; wildcard, path, query, and
+fragment entries stay denied. The opt-in enables credentialed CORS for that
+browser application, including HTTP commands and SSE reads. It grants the UI
+owner-equivalent NAC control, so the NAC endpoint must still sit behind an
+authenticated, encrypted ingress. The origin check protects against hostile
+web pages; it is not client authentication and bearer capability does not
+bypass it.

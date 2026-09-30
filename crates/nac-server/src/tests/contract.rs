@@ -1147,6 +1147,106 @@ async fn cross_origin_browser_mutations_are_refused() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn an_exact_operator_allowed_origin_gets_credentialed_cors_without_broadening_others() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("allowed_browser_origin");
+    let nac_home = root.join("nac-home");
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("server-test-key"));
+    unsafe {
+        std::env::set_var(
+            ALLOWED_ORIGINS_ENV,
+            "https://app.example.com, *, https://bad.example/path",
+        )
+    };
+    nac_core::store::initialize(&root.join("store.db")).unwrap();
+    let app = router(test_manager(&root));
+
+    let preflight = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/sessions/missing/compact")
+                .header(header::HOST, "192.168.1.20:3210")
+                .header(header::ORIGIN, "https://app.example.com")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(
+                    header::ACCESS_CONTROL_REQUEST_HEADERS,
+                    "authorization,content-type,x-nac-request-id,x-nac-launch",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preflight.status(), StatusCode::OK);
+    assert_eq!(
+        preflight.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&header::HeaderValue::from_static("https://app.example.com"))
+    );
+    assert_eq!(
+        preflight
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+        Some(&header::HeaderValue::from_static("true"))
+    );
+    let allowed_headers = preflight
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .and_then(|value| value.to_str().ok())
+        .unwrap();
+    assert!(allowed_headers.contains("x-nac-request-id"));
+    assert!(allowed_headers.contains("x-nac-launch"));
+
+    let allowed_mutation = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/sessions/missing/compact")
+                .header(header::HOST, "192.168.1.20:3210")
+                .header(header::ORIGIN, "https://app.example.com")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed_mutation.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        allowed_mutation
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&header::HeaderValue::from_static("https://app.example.com"))
+    );
+
+    for denied_origin in ["https://attacker.example", "https://bad.example"] {
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/sessions/missing/compact")
+                    .header(header::HOST, "192.168.1.20:3210")
+                    .header(header::ORIGIN, denied_origin)
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{denied_origin}");
+        assert!(denied
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
+    }
+
+    drop(app);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn host_headers_are_split_from_their_port_before_they_are_judged() {
     assert_eq!(bare_host("example.com:8443"), Some("example.com"));
