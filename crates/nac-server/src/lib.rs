@@ -1654,9 +1654,10 @@ impl SessionManager {
         mut initial_lease: Option<sessions::SessionOperationLease>,
     ) -> Result<ManagedOrchestratorRecord> {
         loop {
-            let record = nac_core::store::load_managed_orchestrator(
+            let record = delegation_runtime::load_managed_monitor_record(
                 &self.inner.store_path,
                 orchestrator_session_id,
+                generation,
             )?
             .ok_or_else(|| {
                 anyhow!("managed orchestrator session '{orchestrator_session_id}' was not found")

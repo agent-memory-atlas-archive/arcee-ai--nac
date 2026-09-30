@@ -101,7 +101,10 @@ pub fn claim_thread_steering(
     session_id: &str,
     dispatch_id: &str,
 ) -> Result<Vec<ThreadSteeringRecord>> {
-    crate::store::retry_busy(|| claim_thread_steering_once(path, session_id, dispatch_id))
+    crate::store::retry_busy_correlated(
+        crate::telemetry::Correlation::session(Some(session_id)).with_run(Some(dispatch_id)),
+        || claim_thread_steering_once(path, session_id, dispatch_id),
+    )
 }
 
 fn claim_thread_steering_once(
@@ -136,9 +139,10 @@ pub fn acknowledge_thread_steering_batch(
     session_id: &str,
     dispatch_id: &str,
 ) -> Result<()> {
-    crate::store::retry_busy(|| {
-        acknowledge_thread_steering_batch_once(path, ids, session_id, dispatch_id)
-    })
+    crate::store::retry_busy_correlated(
+        crate::telemetry::Correlation::session(Some(session_id)).with_run(Some(dispatch_id)),
+        || acknowledge_thread_steering_batch_once(path, ids, session_id, dispatch_id),
+    )
 }
 
 fn acknowledge_thread_steering_batch_once(
@@ -188,11 +192,17 @@ pub fn expire_thread_steering(
     session_id: &str,
     dispatch_id: &str,
 ) -> Result<Vec<ThreadSteeringRecord>> {
-    crate::store::retry_busy(|| expire_thread_steering_once(path, session_id, Some(dispatch_id)))
+    crate::store::retry_busy_correlated(
+        crate::telemetry::Correlation::session(Some(session_id)).with_run(Some(dispatch_id)),
+        || expire_thread_steering_once(path, session_id, Some(dispatch_id)),
+    )
 }
 
 pub fn expire_session_steering(path: &Path, session_id: &str) -> Result<Vec<ThreadSteeringRecord>> {
-    crate::store::retry_busy(|| expire_thread_steering_once(path, session_id, None))
+    crate::store::retry_busy_correlated(
+        crate::telemetry::Correlation::session(Some(session_id)),
+        || expire_thread_steering_once(path, session_id, None),
+    )
 }
 
 fn expire_thread_steering_once(

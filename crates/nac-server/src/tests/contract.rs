@@ -1,5 +1,59 @@
 use super::*;
 
+#[tokio::test]
+async fn route_health_and_readiness_latency_use_bounded_content_free_labels() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("telemetry_routes");
+    let nac_home = root.join("nac-home");
+    std::fs::create_dir_all(&nac_home).unwrap();
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("telemetry-route-test-key"));
+    let manager = test_manager(&root);
+    let exporter = Arc::new(nac_core::telemetry::InMemoryExporter::default());
+    let recorder = nac_core::telemetry::TelemetryRecorder::bounded(
+        exporter.clone(),
+        nac_core::telemetry::RuntimeMetadata::sqlite(
+            "build-test",
+            "revision-test",
+            nac_core::store::schema_version(),
+            Some("host-secret"),
+            Some("route-test"),
+        ),
+        128,
+    );
+    let _telemetry = nac_core::telemetry::install_test_recorder(recorder);
+    let app = router(manager);
+
+    for path in ["/healthz", "/readyz", "/sessions/RAW-SESSION-CANARY"] {
+        let _ = get_response(app.clone(), path, None).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let events = loop {
+        let events = exporter
+            .events()
+            .into_iter()
+            .filter(|event| event.name == nac_core::telemetry::TelemetryName::HttpRequestDuration)
+            .collect::<Vec<_>>();
+        if events.len() >= 3 {
+            break events;
+        }
+        assert!(Instant::now() < deadline, "route telemetry did not drain");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let routes = events
+        .iter()
+        .filter_map(|event| event.route.as_deref())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(routes.contains("/healthz"));
+    assert!(routes.contains("/readyz"));
+    assert!(routes.contains("/sessions/{session_id}"));
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("RAW-SESSION-CANARY"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 const EXPECTED_OPENAPI_OPERATIONS: &[(&str, &str)] = &[
     ("DELETE", "/auth/{provider}"),
     ("DELETE", "/auth/{provider}/login/{login_id}"),

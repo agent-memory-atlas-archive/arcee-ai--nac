@@ -198,12 +198,11 @@ impl ConnectionCapacity {
         }
     }
 
-    #[cfg(test)]
     fn counts(&self, store_path: &Path) -> (usize, usize) {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             state.total,
             state.by_store.get(store_path).copied().unwrap_or(0),
@@ -244,7 +243,14 @@ impl Drop for ConnectionPermit {
         if remove_store {
             state.by_store.remove(&self.store_path);
         }
+        let process_count = state.total;
+        let store_count = state.by_store.get(&self.store_path).copied().unwrap_or(0);
         drop(state);
+        crate::telemetry::emit_connection_counts(
+            process_count,
+            store_count,
+            crate::telemetry::Correlation::default(),
+        );
         self.capacity.available.notify_all();
     }
 }
@@ -566,6 +572,14 @@ pub fn migration_status(path: &Path) -> StoreMigrationStatus {
 /// Verify that session-serving traffic can check out, open, and query the
 /// initialized store without creating or migrating a replacement database.
 pub fn check_readiness(path: &Path) -> Result<()> {
+    crate::telemetry::observe_store(
+        crate::telemetry::StoreOperation::Readiness,
+        crate::telemetry::Correlation::default(),
+        || check_readiness_inner(path),
+    )
+}
+
+fn check_readiness_inner(path: &Path) -> Result<()> {
     reject_future_schema_before_open(path)?;
     let conn = connect_existing(path)?;
     let schema_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -609,25 +623,40 @@ fn connect_with_capacity_using(
     timeout: Duration,
     open: impl FnOnce(&Path) -> rusqlite::Result<Connection>,
 ) -> Result<StoreConnection> {
-    let path = resolved_store_path(path)?;
-    let permit = capacity.acquire(&path, timeout)?;
-    let connection =
-        open(&path).with_context(|| format!("failed to open SQLite store {}", path.display()))?;
-    let conn = StoreConnection {
-        connection,
-        _permit: permit,
-    };
-    #[cfg(test)]
-    {
-        let mut tracked = TRACKED_CONNECTION_OPENS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(count) = tracked.get_mut(&path) {
-            *count += 1;
-        }
-    }
-    conn.busy_timeout(Duration::from_secs(5))?;
-    Ok(conn)
+    crate::telemetry::observe_store(
+        crate::telemetry::StoreOperation::ConnectionAcquire,
+        crate::telemetry::Correlation::default(),
+        || {
+            let path = resolved_store_path(path)?;
+            let permit = capacity.acquire(&path, timeout)?;
+            let connection = open(&path)
+                .with_context(|| format!("failed to open SQLite store {}", path.display()))?;
+            let mut conn = StoreConnection {
+                connection,
+                _permit: permit,
+            };
+            #[cfg(test)]
+            {
+                let mut tracked = TRACKED_CONNECTION_OPENS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(count) = tracked.get_mut(&path) {
+                    *count += 1;
+                }
+            }
+            conn.busy_timeout(Duration::from_secs(5))?;
+            if crate::telemetry::enabled() {
+                conn.profile(Some(crate::telemetry::sqlite_profile));
+            }
+            let (process_count, store_count) = capacity.counts(&path);
+            crate::telemetry::emit_connection_counts(
+                process_count,
+                store_count,
+                crate::telemetry::Correlation::default(),
+            );
+            Ok(conn)
+        },
+    )
 }
 
 fn connect_with_capacity(

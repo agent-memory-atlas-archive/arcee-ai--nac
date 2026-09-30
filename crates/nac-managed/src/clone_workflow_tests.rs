@@ -9,6 +9,43 @@ struct TestProjectRegistrar {
     projects: StdMutex<Vec<ProjectRecord>>,
 }
 
+#[derive(Default)]
+struct ProcessObservationState {
+    starts: std::sync::atomic::AtomicUsize,
+    stops: std::sync::atomic::AtomicUsize,
+    observations: StdMutex<Vec<(Option<u32>, String)>>,
+}
+
+struct TestProcessObserver(Arc<ProcessObservationState>);
+
+struct TestProcessLease(Arc<ProcessObservationState>);
+
+impl Drop for TestProcessLease {
+    fn drop(&mut self) {
+        self.0
+            .stops
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl ManagedChildProcessObserver for TestProcessObserver {
+    fn start(
+        &self,
+        pid: Option<u32>,
+        operation_id: &str,
+    ) -> Box<dyn crate::ManagedChildProcessLease> {
+        self.0
+            .starts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((pid, operation_id.to_string()));
+        Box::new(TestProcessLease(Arc::clone(&self.0)))
+    }
+}
+
 impl ProjectRegistrar for TestProjectRegistrar {
     fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
         Ok(self
@@ -99,6 +136,23 @@ impl Fixture {
             registrar,
             None,
             git_executable,
+        )
+        .unwrap()
+    }
+
+    fn service_with_observer(
+        &self,
+        observer: Arc<dyn ManagedChildProcessObserver>,
+    ) -> ManagedCloneService {
+        let registrar = Arc::<TestProjectRegistrar>::clone(&self.registrar);
+        ManagedCloneService::new_with_git_executable_and_observer(
+            &self.repository_root,
+            &self.state_root,
+            &self.home_root,
+            registrar,
+            None,
+            PathBuf::from("git"),
+            Some(observer),
         )
         .unwrap()
     }
@@ -212,6 +266,31 @@ async fn selected_non_default_branch_is_published_before_project_creation() {
         .repository_root
         .join(format!(".nac-clone-{}", started.operation_id))
         .exists());
+}
+
+#[tokio::test]
+async fn managed_clone_process_observer_owns_the_full_child_lifetime() {
+    let fixture = Fixture::new("process-observer");
+    let remote = local_remote(&fixture.root, "origin");
+    let identity = canonical_remote_identity(&remote.display().to_string()).unwrap();
+    let state = Arc::new(ProcessObservationState::default());
+    let service = fixture.service_with_observer(Arc::new(TestProcessObserver(Arc::clone(&state))));
+    let started = service
+        .start_validated(request(&remote, "observed", "main"), identity)
+        .unwrap();
+
+    let completed = wait_for_terminal(&service, &started.operation_id).await;
+    assert_eq!(completed.status, ManagedCloneStatus::Completed);
+    assert_eq!(state.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(state.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let observations = state
+        .observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(observations.len(), 1);
+    assert!(observations[0].0.is_some());
+    assert_eq!(observations[0].1, started.operation_id);
 }
 
 #[tokio::test]

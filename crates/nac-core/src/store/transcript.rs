@@ -440,16 +440,22 @@ impl TranscriptLogWriter {
         if messages.is_empty() {
             return Ok(());
         }
-        let _operation = self
-            .operation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut connection = open_runtime_connection(&self.store_path)?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        append_messages_in_transaction(&transaction, session_id, start_idx, messages)?;
-        transaction.commit()?;
-        Ok(())
+        crate::telemetry::observe_store(
+            crate::telemetry::StoreOperation::TranscriptAppend,
+            crate::telemetry::Correlation::session(Some(session_id)),
+            || {
+                let _operation = self
+                    .operation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut connection = open_runtime_connection(&self.store_path)?;
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                append_messages_in_transaction(&transaction, session_id, start_idx, messages)?;
+                transaction.commit()?;
+                Ok(())
+            },
+        )
     }
 
     /// Append a claimed orchestrator/thread steering batch and acknowledge
@@ -473,22 +479,28 @@ impl TranscriptLogWriter {
         if messages.is_empty() {
             return Ok(());
         }
-        let _operation = self
-            .operation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut connection = open_runtime_connection(&self.store_path)?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        append_messages_in_transaction(&transaction, session_id, start_idx, messages)?;
-        super::steering::acknowledge_thread_steering_batch_with_connection(
-            &transaction,
-            steering_ids,
-            session_id,
-            dispatch_id,
-        )?;
-        transaction.commit()?;
-        Ok(())
+        crate::telemetry::observe_store(
+            crate::telemetry::StoreOperation::TranscriptAppend,
+            crate::telemetry::Correlation::session(Some(session_id)),
+            || {
+                let _operation = self
+                    .operation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut connection = open_runtime_connection(&self.store_path)?;
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                append_messages_in_transaction(&transaction, session_id, start_idx, messages)?;
+                super::steering::acknowledge_thread_steering_batch_with_connection(
+                    &transaction,
+                    steering_ids,
+                    session_id,
+                    dispatch_id,
+                )?;
+                transaction.commit()?;
+                Ok(())
+            },
+        )
     }
 
     /// Append the submitted user turn and install its recovery obligation in
@@ -527,28 +539,40 @@ impl TranscriptLogWriter {
         if !matches!(message, Message::User { .. }) {
             return Err(anyhow!("a run prompt must be a user transcript message"));
         }
-        let Message::User { content } = message else {
-            unreachable!()
-        };
-        let _operation = self
-            .operation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut connection = open_runtime_connection(&self.store_path)?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let submitted_message_id = append_messages_in_transaction(
-            &transaction,
-            session_id,
-            idx,
-            std::slice::from_ref(message),
-        )?;
-        replace_with_active_run(&transaction, session_id, run_id, submitted_message_id)?;
-        if let Some(inbox_item_id) = inbox_item_id {
-            mark_inbox_item_delivered(&transaction, session_id, inbox_item_id, run_id, content)?;
-        }
-        transaction.commit()?;
-        Ok(())
+        crate::telemetry::observe_store(
+            crate::telemetry::StoreOperation::TranscriptAppend,
+            crate::telemetry::Correlation::session(Some(session_id)).with_run(Some(run_id)),
+            || {
+                let Message::User { content } = message else {
+                    unreachable!()
+                };
+                let _operation = self
+                    .operation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut connection = open_runtime_connection(&self.store_path)?;
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let submitted_message_id = append_messages_in_transaction(
+                    &transaction,
+                    session_id,
+                    idx,
+                    std::slice::from_ref(message),
+                )?;
+                replace_with_active_run(&transaction, session_id, run_id, submitted_message_id)?;
+                if let Some(inbox_item_id) = inbox_item_id {
+                    mark_inbox_item_delivered(
+                        &transaction,
+                        session_id,
+                        inbox_item_id,
+                        run_id,
+                        content,
+                    )?;
+                }
+                transaction.commit()?;
+                Ok(())
+            },
+        )
     }
 
     /// Consume every steer targeted at `run_id` that won admission before
@@ -561,52 +585,58 @@ impl TranscriptLogWriter {
         run_id: &str,
         start_idx: u64,
     ) -> Result<Vec<SessionInboxRecord>> {
-        let _operation = self
-            .operation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut connection = open_runtime_connection(&self.store_path)?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let records = {
-            let mut statement = transaction.prepare(&format!(
-                "SELECT {INBOX_RECORD_COLUMNS} FROM session_inbox
-                 WHERE session_id = ?1 AND delivery = 'steer'
-                   AND status = 'pending' AND target_run_id = ?2
-                 ORDER BY id ASC"
-            ))?;
-            let records = statement
-                .query_map(params![session_id, run_id], row_to_inbox_record)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            records
-        };
-        if records.is_empty() {
-            transaction.commit()?;
-            return Ok(Vec::new());
-        }
-        let messages = records
-            .iter()
-            .map(|record| Message::User {
-                content: record.content.clone(),
-            })
-            .collect::<Vec<_>>();
-        append_messages_in_transaction(&transaction, session_id, start_idx, &messages)?;
-        for record in &records {
-            mark_inbox_item_delivered(
-                &transaction,
-                session_id,
-                record.id,
-                run_id,
-                &record.content,
-            )?;
-        }
-        transaction.commit()?;
-        records
-            .into_iter()
-            .map(|record| {
-                load_session_inbox_item_with_connection(&connection, session_id, record.id)
-            })
-            .collect()
+        crate::telemetry::observe_store(
+            crate::telemetry::StoreOperation::TranscriptAppend,
+            crate::telemetry::Correlation::session(Some(session_id)).with_run(Some(run_id)),
+            || {
+                let _operation = self
+                    .operation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut connection = open_runtime_connection(&self.store_path)?;
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let records = {
+                    let mut statement = transaction.prepare(&format!(
+                        "SELECT {INBOX_RECORD_COLUMNS} FROM session_inbox
+                         WHERE session_id = ?1 AND delivery = 'steer'
+                           AND status = 'pending' AND target_run_id = ?2
+                         ORDER BY id ASC"
+                    ))?;
+                    let records = statement
+                        .query_map(params![session_id, run_id], row_to_inbox_record)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    records
+                };
+                if records.is_empty() {
+                    transaction.commit()?;
+                    return Ok(Vec::new());
+                }
+                let messages = records
+                    .iter()
+                    .map(|record| Message::User {
+                        content: record.content.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                append_messages_in_transaction(&transaction, session_id, start_idx, &messages)?;
+                for record in &records {
+                    mark_inbox_item_delivered(
+                        &transaction,
+                        session_id,
+                        record.id,
+                        run_id,
+                        &record.content,
+                    )?;
+                }
+                transaction.commit()?;
+                records
+                    .into_iter()
+                    .map(|record| {
+                        load_session_inbox_item_with_connection(&connection, session_id, record.id)
+                    })
+                    .collect()
+            },
+        )
     }
 
     /// Read the full log tail relative to a snapshot blob of `blob_len`

@@ -13,6 +13,8 @@ mod github_credential_store;
 mod managed_control_assertion;
 mod readiness;
 
+pub use clone_process::{ManagedChildProcessLease, ManagedChildProcessObserver};
+
 pub use clone_workflow::{
     ManagedCloneOperation, ManagedCloneRequest, ManagedCloneService, ManagedCloneStatus,
     ProjectRegistrar,

@@ -1,5 +1,8 @@
 # Managed NAC host
 
+For opt-in, bounded store/process/probe attribution, see
+[Managed NAC operational telemetry](telemetry.md).
+
 Managed NAC is an additive, single-owner deployment mode. It adds GitHub App
 onboarding, host-wide write-only secrets, managed readiness, and a fixed
 developer image without changing ordinary local or SSH Projects. Starting

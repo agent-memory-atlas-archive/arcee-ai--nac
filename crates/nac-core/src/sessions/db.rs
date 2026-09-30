@@ -77,7 +77,10 @@ pub(super) fn deserialize_light_model(
 }
 
 pub fn create_session(path: &Path, snapshot: &SessionSnapshot) -> Result<()> {
-    crate::store::retry_busy(|| create_session_once(path, snapshot))
+    crate::store::retry_busy_correlated(
+        crate::telemetry::Correlation::session(Some(&snapshot.session_id)),
+        || create_session_once(path, snapshot),
+    )
 }
 
 fn create_session_once(path: &Path, snapshot: &SessionSnapshot) -> Result<()> {
@@ -153,6 +156,19 @@ pub fn increment_run_count(path: &Path, session_id: &str) -> Result<()> {
 /// always has its row (the transcript log appends FK-require it), so a
 /// missing row is corruption, not an upsert case.
 pub fn save_session_run_state(path: &Path, update: &SessionRunStateUpdate) -> Result<()> {
+    crate::telemetry::observe_store(
+        crate::telemetry::StoreOperation::TerminalSettlement,
+        crate::telemetry::Correlation::session(Some(&update.session_id)).with_run(
+            update
+                .finished_run_id
+                .as_deref()
+                .or(update.failed_run_id.as_deref()),
+        ),
+        || save_session_run_state_inner(path, update),
+    )
+}
+
+fn save_session_run_state_inner(path: &Path, update: &SessionRunStateUpdate) -> Result<()> {
     let sandbox_json = update
         .sandbox_spec
         .as_ref()

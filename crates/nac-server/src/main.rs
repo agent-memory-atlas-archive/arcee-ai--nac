@@ -570,6 +570,7 @@ async fn run_server(cli: ServerCli, invocation_name: &str) -> Result<()> {
     eprintln!("project: {}", root_cwd.display());
     let managed_host =
         nac_managed::ManagedHostConfig::load_optional(managed_config_path.as_deref())?;
+    configure_telemetry(managed_host.as_ref());
     let manager = SessionManager::new(ServerOptions {
         root_cwd,
         store_path: cli.store_path,
@@ -707,6 +708,7 @@ async fn run_managed_worker(cli: ManagedWorkerCli) -> Result<()> {
         cli.native_credential_fd,
         cli.native_credential_socket,
     )?;
+    configure_telemetry(None);
     // Fire-and-forget models.dev catalog overlay refresh; cadence-gated via
     // the sidecar, so usually a no-op read. Keeps the overlay fresh for
     // worker-heavy usage even when the server is not running.
@@ -808,6 +810,22 @@ async fn run_managed_worker(cli: ManagedWorkerCli) -> Result<()> {
     });
     run_config.set_command_environment_provider(command_environment);
     runtime::run_managed_worker(run_config, credential_receiver).await
+}
+
+fn configure_telemetry(managed_host: Option<&nac_managed::ManagedHostConfig>) {
+    let scenario = std::env::var("NAC_TELEMETRY_SCENARIO").ok();
+    let runtime = nac_core::telemetry::RuntimeMetadata::sqlite(
+        env!("NAC_BUILD_ID"),
+        env!("NAC_SOURCE_REVISION"),
+        nac_core::store::schema_version(),
+        managed_host.map(|host| host.logical_host_id.as_str()),
+        scenario.as_deref(),
+    );
+    if nac_core::telemetry::configure_from_env(runtime)
+        == nac_core::telemetry::ConfigureStatus::Invalid
+    {
+        eprintln!("nac: ignoring invalid NAC_TELEMETRY mode; expected stderr or disabled");
+    }
 }
 fn internal_sandbox_mounts(args: &SandboxArgs) -> Result<Vec<(PathBuf, PathBuf, bool)>> {
     let mut mounts = Vec::new();

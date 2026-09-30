@@ -23,6 +23,21 @@ use crate::{
     SubmitPromptRequest, ThreadSteeringRequest,
 };
 
+pub(crate) fn load_managed_monitor_record(
+    store_path: &std::path::Path,
+    orchestrator_session_id: &str,
+    generation: u64,
+) -> anyhow::Result<Option<ManagedOrchestratorRecord>> {
+    let correlation = nac_core::telemetry::Correlation::session(Some(orchestrator_session_id))
+        .with_generation(generation);
+    nac_core::telemetry::emit_resource_sample(correlation.clone(), None);
+    nac_core::telemetry::observe_store(
+        nac_core::telemetry::StoreOperation::ManagedMonitorPoll,
+        correlation,
+        || nac_core::store::load_managed_orchestrator(store_path, orchestrator_session_id),
+    )
+}
+
 impl nac_core::traditional_children::TraditionalChildController
     for ServerTraditionalChildController
 {
