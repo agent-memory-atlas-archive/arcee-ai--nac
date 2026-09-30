@@ -109,7 +109,7 @@ impl Fixture {
             managed_upgrade_expectation: None,
         };
         managed_host.validate().unwrap();
-        let manager = SessionManager::new(crate::ServerOptions {
+        let manager = SessionManager::new_unowned_fixture(crate::ServerOptions {
             root_cwd: root.clone(),
             store_path: Some(root.join("store.db")),
             worker_executable: None,
@@ -227,7 +227,7 @@ impl Fixture {
             .unwrap(),
             nac_core::store::ManagedPrepareOutcome::SafeToStop { .. }
         ));
-        SessionManager::new(crate::ServerOptions {
+        SessionManager::new_unowned_fixture(crate::ServerOptions {
             root_cwd: self.root.clone(),
             store_path: Some(self.manager.inner.store_path.clone()),
             worker_executable: None,
@@ -759,7 +759,7 @@ fn wrong_candidate_is_rejected_before_any_managed_state_mutation() {
     .unwrap();
     let before = tree_snapshot(&fixture.root);
     let managed_host = fixture.manager.managed_host().unwrap().clone();
-    let result = SessionManager::new(crate::ServerOptions {
+    let result = SessionManager::new_unowned_fixture(crate::ServerOptions {
         root_cwd: fixture.root.clone(),
         store_path: Some(fixture.manager.inner.store_path.clone()),
         worker_executable: None,
@@ -795,7 +795,7 @@ async fn managed_v2_future_and_invalid_stores_serve_immutable_recovery_diagnosti
             std::fs::write(&fixture.manager.inner.store_path, b"not a SQLite database").unwrap();
         }
         let before = std::fs::read(&fixture.manager.inner.store_path).unwrap();
-        let recovery = SessionManager::new(crate::ServerOptions {
+        let recovery = SessionManager::new_unowned_fixture(crate::ServerOptions {
             root_cwd: fixture.root.clone(),
             store_path: Some(fixture.manager.inner.store_path.clone()),
             worker_executable: None,
@@ -874,7 +874,7 @@ async fn failed_listener_bind_keeps_accepted_candidate_in_maintenance() {
         Vec::new(),
     )
     .unwrap();
-    let replacement = SessionManager::new(crate::ServerOptions {
+    let replacement = SessionManager::new_unowned_fixture(crate::ServerOptions {
         root_cwd: fixture.root.clone(),
         store_path: Some(fixture.manager.inner.store_path.clone()),
         worker_executable: None,
@@ -1030,7 +1030,7 @@ async fn controller_startup_expectation_recovers_suspended_or_failed_release_and
         .unwrap());
 
         if !failed_in_maintenance {
-            let unexpected = SessionManager::new(crate::ServerOptions {
+            let unexpected = SessionManager::new_unowned_fixture(crate::ServerOptions {
                 root_cwd: fixture.root.clone(),
                 store_path: Some(fixture.manager.inner.store_path.clone()),
                 worker_executable: None,
@@ -1090,14 +1090,14 @@ async fn controller_startup_expectation_recovers_suspended_or_failed_release_and
             actor: previous.actor.clone(),
             beneficiary: previous.beneficiary.clone(),
         });
-        let replacement = SessionManager::new(crate::ServerOptions {
+        let replacement = SessionManager::new_unowned_fixture(crate::ServerOptions {
             root_cwd: fixture.root.clone(),
             store_path: Some(fixture.manager.inner.store_path.clone()),
             worker_executable: None,
             managed_host: Some(managed.clone()),
         })
         .unwrap();
-        let replayed = SessionManager::new(crate::ServerOptions {
+        let replayed = SessionManager::new_unowned_fixture(crate::ServerOptions {
             root_cwd: fixture.root.clone(),
             store_path: Some(fixture.manager.inner.store_path.clone()),
             worker_executable: None,
@@ -1172,7 +1172,7 @@ fn controller_startup_expectation_explicitly_adopts_a_virgin_pre_control_release
     let mut mismatched_expectation = expectation.clone();
     mismatched_expectation.target.source_sha = "f".repeat(40);
     mismatched.managed_upgrade_expectation = Some(mismatched_expectation);
-    assert!(SessionManager::new(crate::ServerOptions {
+    assert!(SessionManager::new_unowned_fixture(crate::ServerOptions {
         root_cwd: fixture.root.clone(),
         store_path: Some(fixture.manager.inner.store_path.clone()),
         worker_executable: None,
@@ -1189,14 +1189,14 @@ fn controller_startup_expectation_explicitly_adopts_a_virgin_pre_control_release
 
     let mut managed = fixture.manager.managed_host().unwrap().clone();
     managed.managed_upgrade_expectation = Some(expectation);
-    let replacement = SessionManager::new(crate::ServerOptions {
+    let replacement = SessionManager::new_unowned_fixture(crate::ServerOptions {
         root_cwd: fixture.root.clone(),
         store_path: Some(fixture.manager.inner.store_path.clone()),
         worker_executable: None,
         managed_host: Some(managed.clone()),
     })
     .unwrap();
-    let replayed = SessionManager::new(crate::ServerOptions {
+    let replayed = SessionManager::new_unowned_fixture(crate::ServerOptions {
         root_cwd: fixture.root.clone(),
         store_path: Some(fixture.manager.inner.store_path.clone()),
         worker_executable: None,
@@ -1249,7 +1249,7 @@ async fn accepted_replacement_fences_old_public_completion_and_private_control_r
         Vec::new(),
     )
     .unwrap();
-    let replacement = SessionManager::new(crate::ServerOptions {
+    let replacement = SessionManager::new_unowned_fixture(crate::ServerOptions {
         root_cwd: fixture.root.clone(),
         store_path: Some(fixture.manager.inner.store_path.clone()),
         worker_executable: None,

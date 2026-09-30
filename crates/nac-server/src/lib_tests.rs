@@ -300,13 +300,57 @@ fn managed_library_startup_captures_and_hardens_native_credentials() {
 }
 
 fn test_manager(root: &std::path::Path) -> SessionManager {
-    SessionManager::new(ServerOptions {
+    SessionManager::new_unowned_fixture(ServerOptions {
         root_cwd: root.to_path_buf(),
         store_path: Some(root.join("store.db")),
         worker_executable: None,
         managed_host: None,
     })
     .expect("session manager")
+}
+
+fn owned_test_manager(root: &std::path::Path) -> Result<SessionManager> {
+    SessionManager::new(ServerOptions {
+        root_cwd: root.to_path_buf(),
+        store_path: Some(root.join("store.db")),
+        worker_executable: None,
+        managed_host: None,
+    })
+}
+
+#[test]
+fn serving_store_ownership_rejects_a_second_manager_and_allows_restart() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("store_owner_restart");
+    let _env = ScopedModelEnv::isolated(&root.join("nac-home"), None);
+    let first = owned_test_manager(&root).unwrap();
+    let error = match owned_test_manager(&root) {
+        Ok(_) => panic!("a second serving manager must not own the same store"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        "store is already owned by another active nac-web process; stop that process or pass --store-path with a different database"
+    );
+
+    drop(first);
+    let restarted = owned_test_manager(&root).expect("restart should recover store ownership");
+    drop(restarted);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn serving_managers_can_own_separate_stores_concurrently() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let first_root = temp_root("store_owner_first");
+    let second_root = temp_root("store_owner_second");
+    let _env = ScopedModelEnv::isolated(&first_root.join("nac-home"), None);
+    let first = owned_test_manager(&first_root).unwrap();
+    let second = owned_test_manager(&second_root).unwrap();
+
+    drop((first, second));
+    let _ = std::fs::remove_dir_all(first_root);
+    let _ = std::fs::remove_dir_all(second_root);
 }
 
 fn test_managed_manager(root: &std::path::Path) -> SessionManager {
@@ -339,7 +383,7 @@ fn test_managed_manager(root: &std::path::Path) -> SessionManager {
         managed_upgrade_expectation: None,
     };
     managed_host.validate().unwrap();
-    SessionManager::new(ServerOptions {
+    SessionManager::new_unowned_fixture(ServerOptions {
         root_cwd: root.to_path_buf(),
         store_path: Some(root.join("store.db")),
         worker_executable: None,
@@ -412,7 +456,7 @@ fn test_managed_bootstrap_manager_with_contract(
         managed_upgrade_expectation: None,
     };
     managed_host.validate().unwrap();
-    SessionManager::new(ServerOptions {
+    SessionManager::new_unowned_fixture(ServerOptions {
         root_cwd: root.to_path_buf(),
         store_path: Some(root.join("store.db")),
         worker_executable: None,

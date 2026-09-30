@@ -718,7 +718,7 @@ async fn mounted_key_discovers_every_entitled_model_only_at_its_configured_desti
     // validation requires HTTPS.
     let mut config = test_managed_manager(&root).managed_host().unwrap().clone();
     config.model_endpoint = base_url.clone();
-    let manager = SessionManager::new(ServerOptions {
+    let manager = SessionManager::new_unowned_fixture(ServerOptions {
         root_cwd: root.clone(),
         store_path: Some(root.join("store.db")),
         worker_executable: None,

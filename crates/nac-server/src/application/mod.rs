@@ -3,6 +3,7 @@ pub(crate) mod delegation;
 pub(crate) mod managed;
 pub(crate) mod model_catalog;
 pub(crate) mod model_configurations;
+pub(crate) mod persistence;
 pub(crate) mod projects;
 pub(crate) mod request_validation;
 pub(crate) mod session_attachment;
