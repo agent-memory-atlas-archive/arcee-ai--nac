@@ -1247,6 +1247,46 @@ async fn an_exact_operator_allowed_origin_gets_credentialed_cors_without_broaden
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn managed_admission_errors_retain_allowed_origin_cors_headers() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("managed_admission_cors");
+    let nac_home = root.join("nac-home");
+    let _env = ScopedModelEnv::isolated(&nac_home, Some("server-test-key"));
+    unsafe { std::env::set_var(ALLOWED_ORIGINS_ENV, "https://app.example.com") };
+    let store_path = root.join("store.db");
+    nac_core::store::initialize(&store_path).unwrap();
+    let app = router(test_managed_manager(&root));
+
+    // Replacing the store with a directory after construction makes managed
+    // admission fail before the route handler runs, exercising its short circuit.
+    std::fs::remove_file(&store_path).unwrap();
+    std::fs::create_dir(&store_path).unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/sessions/missing/compact")
+                .header(header::HOST, "192.168.1.20:3210")
+                .header(header::ORIGIN, "https://app.example.com")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&header::HeaderValue::from_static("https://app.example.com"))
+    );
+
+    drop(app);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn host_headers_are_split_from_their_port_before_they_are_judged() {
     assert_eq!(bare_host("example.com:8443"), Some("example.com"));

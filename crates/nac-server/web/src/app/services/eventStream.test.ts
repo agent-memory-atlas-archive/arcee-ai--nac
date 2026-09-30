@@ -105,6 +105,35 @@ it("passes bearer and launch context to an injected stream adapter", async () =>
   dispose();
 });
 
+it("retries when resolving injected stream context fails transiently", async () => {
+  const transientFailure = new Error("token refresh unavailable");
+  const headers = vi
+    .fn<() => Promise<Record<string, string>>>()
+    .mockRejectedValueOnce(transientFailure)
+    .mockResolvedValue({ "X-NAC-Launch": "launch-2" });
+  const client = createNacClient({ headers });
+  const eventSource = vi.fn((url: string, init: EventSourceInit) => {
+    return new FakeEventSource(url, init) as unknown as EventSource;
+  });
+  const onTransportError = vi.fn();
+
+  const dispose = subscribeToSessionEvents(
+    "session-a",
+    { onEnvelope: vi.fn(), onTransportError },
+    { client, eventSource },
+  );
+
+  await vi.waitFor(() =>
+    expect(onTransportError).toHaveBeenCalledExactlyOnceWith(transientFailure),
+  );
+  expect(eventSource).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(headers).toHaveBeenCalledTimes(2);
+  expect(eventSource).toHaveBeenCalledOnce();
+  dispose();
+});
+
 it("reconnects with the epoch and sequence as one cursor", async () => {
   const dispose = subscribeToSessionEvents("session-a", {
     onEnvelope: vi.fn(),

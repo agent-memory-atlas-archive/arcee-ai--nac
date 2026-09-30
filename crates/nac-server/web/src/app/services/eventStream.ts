@@ -129,6 +129,18 @@ export function subscribeToSessionEvents(
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   };
 
+  const handleConnectionFailure = (error?: unknown) => {
+    if (closed) return;
+    if (error !== undefined) handlers.onTransportError?.(error);
+    failedAttempts += 1;
+    if (!everOpened && failedAttempts >= MAX_ATTEMPTS_BEFORE_OPEN) {
+      setStatus("error");
+      closeSource();
+      return;
+    }
+    scheduleReconnect();
+  };
+
   const recoverFrom = (backpressure: SessionBackpressure) => {
     handlers.onBackpressure?.(backpressure);
     deliveryGeneration += 1;
@@ -274,14 +286,7 @@ export function subscribeToSessionEvents(
     });
 
     source.onerror = () => {
-      if (closed) return;
-      failedAttempts += 1;
-      if (!everOpened && failedAttempts >= MAX_ATTEMPTS_BEFORE_OPEN) {
-        setStatus("error");
-        closeSource();
-        return;
-      }
-      scheduleReconnect();
+      handleConnectionFailure();
     };
   };
 
@@ -289,8 +294,7 @@ export function subscribeToSessionEvents(
     void connect().catch((error: unknown) => {
       if (closed) return;
       closeSource();
-      handlers.onTransportError?.(error);
-      setStatus("error");
+      handleConnectionFailure(error);
     });
   }
 

@@ -521,12 +521,7 @@ pub fn router(manager: SessionManager) -> Router {
 
 fn secure_public_router(router: Router, manager: SessionManager) -> Router {
     let allowed_origins = Arc::new(configured_allowed_origins());
-    let router = if allowed_origins.is_empty() {
-        router
-    } else {
-        router.layer(browser_cors_layer(&allowed_origins))
-    };
-    router
+    let router = router
         .layer(response_compression_layer())
         .layer(middleware::from_fn(record_http_latency))
         .layer(middleware::from_fn_with_state(
@@ -534,13 +529,21 @@ fn secure_public_router(router: Router, manager: SessionManager) -> Router {
             enforce_managed_admission,
         ))
         .layer(middleware::from_fn_with_state(
-            allowed_origins,
+            Arc::clone(&allowed_origins),
             reject_cross_origin_mutation,
-        ))
-        .layer(middleware::from_fn_with_state(
-            Arc::new(configured_allowed_hosts()),
-            reject_foreign_host,
-        ))
+        ));
+    // CORS must wrap admission and origin policy so browser clients can read
+    // their deliberate error responses instead of misclassifying them as an
+    // uncertain transport failure.
+    let router = if allowed_origins.is_empty() {
+        router
+    } else {
+        router.layer(browser_cors_layer(&allowed_origins))
+    };
+    router.layer(middleware::from_fn_with_state(
+        Arc::new(configured_allowed_hosts()),
+        reject_foreign_host,
+    ))
 }
 
 fn managed_migration_recovery_router(manager: SessionManager) -> Router {
@@ -553,22 +556,22 @@ fn managed_migration_recovery_router(manager: SessionManager) -> Router {
             get(managed_status::managed_status_handler),
         )
         .with_state(manager);
+    let router = router
+        .layer(response_compression_layer())
+        .layer(middleware::from_fn(record_http_latency))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&allowed_origins),
+            reject_cross_origin_mutation,
+        ));
     let router = if allowed_origins.is_empty() {
         router
     } else {
         router.layer(browser_cors_layer(&allowed_origins))
     };
-    router
-        .layer(response_compression_layer())
-        .layer(middleware::from_fn(record_http_latency))
-        .layer(middleware::from_fn_with_state(
-            allowed_origins,
-            reject_cross_origin_mutation,
-        ))
-        .layer(middleware::from_fn_with_state(
-            Arc::new(configured_allowed_hosts()),
-            reject_foreign_host,
-        ))
+    router.layer(middleware::from_fn_with_state(
+        Arc::new(configured_allowed_hosts()),
+        reject_foreign_host,
+    ))
 }
 
 fn embedded_frontend_router() -> Router {
