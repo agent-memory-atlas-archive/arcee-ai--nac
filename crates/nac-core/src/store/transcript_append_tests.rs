@@ -293,7 +293,7 @@ fn transcript_append_v29_upgrade_preserves_legacy_payload_and_recovery() {
         connection
             .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
             .unwrap(),
-        30
+        schema_version()
     );
     assert_eq!(
         connection
