@@ -332,6 +332,7 @@ pub(super) async fn run_worker(
     let timeout_trace_for_logs = Arc::clone(&timeout_trace);
     let stderr_credential_redactions = native_credential_redactions.clone();
     let (cancel_ack_tx, mut cancel_ack_rx) = watch::channel(false);
+    let (commit_ack_tx, commit_ack_rx) = watch::channel(false);
     let reader_shutdown = ThreadCancellation::default();
     let stderr_cancellation = cancellation.clone();
     let stderr_shutdown = reader_shutdown.clone();
@@ -341,6 +342,7 @@ pub(super) async fn run_worker(
         let mut output = String::new();
         let mut worker_usage = TokenUsage::default();
         let mut model_error = None;
+        let mut deferred_finish = None;
         loop {
             let line = tokio::select! {
                 _ = stderr_shutdown.cancelled() => break,
@@ -378,7 +380,11 @@ pub(super) async fn run_worker(
                         }
                     }
                 }
-                event_sink.emit(event);
+                if matches!(event, AgentEvent::RunFinished { .. }) {
+                    deferred_finish = Some(event);
+                } else {
+                    event_sink.emit(event);
+                }
             } else {
                 event_sink.emit(AgentEvent::ThreadLog {
                     name: thread_name_for_logs.clone(),
@@ -399,7 +405,7 @@ pub(super) async fn run_worker(
         } else {
             Some(worker_usage)
         };
-        (output, usage, model_error)
+        (output, usage, model_error, deferred_finish)
     });
 
     let stdout_cancellation = cancellation.clone();
@@ -468,6 +474,7 @@ pub(super) async fn run_worker(
                     completion_stdin.lock().await.take();
                     break;
                 }
+                let _ = commit_ack_tx.send(true);
             } else {
                 let line = redact_worker_native_credentials(
                     line.trim_end(),
@@ -577,8 +584,14 @@ pub(super) async fn run_worker(
     }
 
     let readers = async {
-        let (stderr, worker_usage, model_error) = stderr_handle.await.unwrap_or_default();
+        let (stderr, worker_usage, model_error, deferred_finish) =
+            stderr_handle.await.unwrap_or_default();
         let (stdout, protocol_error) = stdout_handle.await.unwrap_or_default();
+        if *commit_ack_rx.borrow() {
+            if let Some(event) = deferred_finish {
+                runtime.event_sink.emit(event);
+            }
+        }
         (stderr, worker_usage, protocol_error.or(model_error), stdout)
     };
     tokio::pin!(readers);
@@ -671,11 +684,11 @@ async fn commit_completion_frame(
     let path = path.to_path_buf();
     let mut identity = expected.clone();
     let content = frame.content;
-    let cancellation = cancellation.clone();
+    let commit_cancellation = cancellation.clone();
     let episode_id = tokio::task::spawn_blocking(move || {
         identity.generation =
             crate::store::worker_dispatch_generation(&path, &identity.dispatch_id)?;
-        cancellation
+        commit_cancellation
             .run_if_active(|| {
                 crate::store::commit_worker_episode(
                     &path,
@@ -702,8 +715,14 @@ async fn commit_completion_frame(
         encoded.len() <= crate::worker_protocol::MAX_CONTROL_BYTES,
         "host acknowledgement exceeds protocol limit"
     );
-    control.write_all(encoded.as_bytes()).await?;
-    control.flush().await?;
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => anyhow::bail!("host acknowledgement interrupted"),
+        result = async {
+            control.write_all(encoded.as_bytes()).await?;
+            control.flush().await
+        } => result?,
+    }
     Ok(())
 }
 

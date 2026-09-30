@@ -14,6 +14,13 @@ fn completion_process_helper() {
     if mode == "exit_before_send" {
         return;
     }
+    if mode == "premature_finish" {
+        crate::events::EventSink::stderr_prefixed().emit(AgentEvent::RunFinished {
+            thread_name: Some("worker".into()),
+        });
+        wait_at_boundary("timeout_before_send");
+        return;
+    }
     if matches!(mode.as_str(), "timeout_before_send" | "cancel_before_send") {
         wait_at_boundary(&mode);
         return;
@@ -115,6 +122,7 @@ async fn host_completion_protocol_replay_faults_and_no_premature_success() {
         "duplicate",
         "exit_before_send",
         "partial_send",
+        "premature_finish",
         "timeout_before_send",
         "timeout_after_ack",
         "cancel_before_send",
@@ -195,7 +203,7 @@ async fn host_completion_protocol_replay_faults_and_no_premature_success() {
             assert_eq!(episodes[0].content, "durable answer");
             assert_eq!(episodes[0].status, "ok");
         } else {
-            let expected = if mode.starts_with("timeout") {
+            let expected = if mode.starts_with("timeout") || mode == "premature_finish" {
                 "timed_out"
             } else if mode.starts_with("cancel") {
                 "cancelled"
@@ -203,6 +211,14 @@ async fn host_completion_protocol_replay_faults_and_no_premature_success() {
                 "error"
             };
             assert_eq!(episodes[0].status, expected, "{mode}");
+        }
+        if mode == "premature_finish" {
+            while let Ok(event) = events_rx.try_recv() {
+                assert!(
+                    !matches!(event, AgentEvent::RunFinished { .. }),
+                    "host cannot forward worker success without a commit ack"
+                );
+            }
         }
         assert!(!runtime.active_threads.is_active("worker"));
         let _ = std::fs::remove_dir_all(root);
