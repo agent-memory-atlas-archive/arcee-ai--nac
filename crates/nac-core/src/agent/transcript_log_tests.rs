@@ -926,6 +926,145 @@ async fn direct_failure_replays_unacknowledged_assistant_without_duplicate_parti
     let _ = std::fs::remove_dir_all(store_path.parent().unwrap());
 }
 
+fn fenced_prompt_agent(
+    path: &std::path::Path,
+) -> (Agent, Arc<crate::sessions::SessionOperationLease>) {
+    crate::store::initialize(path).unwrap();
+    crate::store::insert_test_session(path, "session");
+    let mut agent = transcript_test_agent(
+        ModelClient::new_for_test(),
+        path.to_path_buf(),
+        Some("session"),
+        AgentMode::Direct,
+    );
+    store_snapshot_messages(path, &agent.messages);
+    agent.committed_log_len = agent.messages.len() as u64;
+    let lease =
+        Arc::new(crate::sessions::SessionOperationLease::try_acquire(path, "session").unwrap());
+    agent.bind_transcript_run("prompt-run", &lease).unwrap();
+    (agent, lease)
+}
+
+#[tokio::test]
+async fn fenced_prompt_lost_ack_replays_before_adopting_the_user_turn() {
+    let path = test_store_path("prompt_lost_ack");
+    let (mut agent, _lease) = fenced_prompt_agent(&path);
+    let run_id = SessionRunId::from_stored("prompt-run".into());
+    agent
+        .transcript_log
+        .as_ref()
+        .unwrap()
+        .writer
+        .lose_next_append_ack_for_test();
+    agent
+        .push_and_log_run_prompt(user_message("one prompt"), &run_id, None)
+        .await
+        .unwrap();
+    assert_eq!(agent.messages.len(), 2);
+    assert_eq!(agent.committed_log_len, 2);
+    assert_eq!(read_log(&path, "session").len(), 1);
+    assert_eq!(
+        crate::store::load_run_recovery(&path, "session")
+            .unwrap()
+            .unwrap()
+            .run_id,
+        "prompt-run"
+    );
+    assert!(!agent.steering_append_pending);
+    assert!(agent.pending_log_end.is_none());
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn fenced_prompt_persistent_uncertainty_never_requests_a_new_logical_run() {
+    let path = test_store_path("prompt_persistent_uncertainty");
+    let (mut agent, _lease) = fenced_prompt_agent(&path);
+    let run_id = SessionRunId::from_stored("prompt-run".into());
+    agent
+        .transcript_log
+        .as_ref()
+        .unwrap()
+        .writer
+        .lose_append_acks_for_test(2);
+    let error = agent
+        .push_and_log_run_prompt(user_message("one prompt"), &run_id, None)
+        .await
+        .unwrap_err();
+    let failure = error
+        .downcast_ref::<crate::run_failure::RunFailure>()
+        .unwrap();
+    assert!(!failure.transient);
+    assert_eq!(agent.committed_log_len, 1);
+    assert!(agent.steering_append_pending);
+    assert_eq!(agent.pending_log_end, Some(2));
+    assert_eq!(read_log(&path, "session").len(), 1);
+    agent
+        .normalize_failed_tail_preserving_partial()
+        .await
+        .unwrap();
+    assert_eq!(agent.messages.len(), 2);
+    assert_eq!(agent.committed_log_len, 2);
+    assert!(!agent.steering_append_pending);
+    assert!(agent.pending_log_end.is_none());
+    assert_eq!(read_log(&path, "session").len(), 1);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn fenced_pre_prompt_cancel_persists_its_terminal_marker() {
+    let path = test_store_path("pre_prompt_cancel");
+    let (mut agent, lease) = fenced_prompt_agent(&path);
+    let writer = Arc::clone(&agent.transcript_log.as_ref().unwrap().writer);
+    let ordinary = writer
+        .append("session", 1, &user_message("unsubmitted prompt"))
+        .unwrap_err();
+    assert_eq!(
+        ordinary.downcast_ref::<crate::store::TranscriptAppendError>(),
+        Some(&crate::store::TranscriptAppendError::StaleRun)
+    );
+    agent
+        .append_cancellation_marker_preserving_tools()
+        .await
+        .unwrap();
+    assert_eq!(agent.messages.len(), 2);
+    assert!(
+        matches!(&agent.messages[1], Message::Assistant { content: Some(text), .. } if text == RUN_CANCELLED_MARKER)
+    );
+    assert_eq!(read_log(&path, "session").len(), 1);
+    assert!(crate::store::load_run_recovery(&path, "session")
+        .unwrap()
+        .is_none());
+    drop(lease);
+    let stale = writer
+        .append("session", 2, &user_message("stale"))
+        .unwrap_err();
+    assert_eq!(
+        stale.downcast_ref::<crate::store::TranscriptAppendError>(),
+        Some(&crate::store::TranscriptAppendError::StaleOwner)
+    );
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn fenced_prompt_definitive_error_clears_pending_state() {
+    let path = test_store_path("prompt_definitive_error");
+    let (mut agent, _lease) = fenced_prompt_agent(&path);
+    crate::store::open_runtime_connection(&path).unwrap().execute_batch(
+        "CREATE TRIGGER reject_prompt BEFORE INSERT ON thread_events BEGIN SELECT RAISE(ABORT, 'prompt rejected'); END;",
+    ).unwrap();
+    let run_id = SessionRunId::from_stored("prompt-run".into());
+    agent
+        .push_and_log_run_prompt(user_message("rejected"), &run_id, None)
+        .await
+        .unwrap_err();
+    assert_eq!(agent.messages.len(), 1);
+    assert_eq!(agent.committed_log_len, 1);
+    assert!(read_log(&path, "session").is_empty());
+    assert!(!agent.steering_append_pending);
+    assert!(agent.pending_log_end.is_none());
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 #[tokio::test]
 async fn cancellation_deletes_log_stragglers_from_an_aborted_append() {
     let store_path = test_store_path("cancel_straggler");

@@ -51,6 +51,23 @@ pub struct TranscriptAppendReceipt {
     pub last_message_id: i64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum AppendPurpose<'a> {
+    Messages,
+    RunPrompt(&'a str),
+    RunMessages(&'a str),
+    Terminal,
+}
+
+impl<'a> AppendPurpose<'a> {
+    fn requested_run(self) -> Option<&'a str> {
+        match self {
+            Self::RunPrompt(run_id) | Self::RunMessages(run_id) => Some(run_id),
+            Self::Messages | Self::Terminal => None,
+        }
+    }
+}
+
 pub(super) struct RunAppendFence {
     pub session_id: String,
     pub run_id: String,
@@ -80,7 +97,12 @@ fn relationship_generation(
 impl TranscriptLogWriter {
     #[cfg(test)]
     pub(crate) fn lose_next_append_ack_for_test(&self) {
-        *self.append_fault.lock().unwrap() = Some(AppendFault::AfterCommitBeforeAck);
+        self.lose_append_acks_for_test(1);
+    }
+    #[cfg(test)]
+    pub(crate) fn lose_append_acks_for_test(&self, count: usize) {
+        assert!(count > 0);
+        *self.append_fault.lock().unwrap() = Some((AppendFault::AfterCommitBeforeAck, count));
     }
     /// Bind a writer to the exact admitted run. Weak ownership prevents the
     /// cached agent from keeping a settled run's OS lease alive. A transaction
@@ -135,12 +157,13 @@ impl TranscriptLogWriter {
         &self,
         transaction: &Transaction<'_>,
         session_id: &str,
-        prompt_run: Option<&str>,
+        purpose: AppendPurpose<'_>,
     ) -> Result<()> {
+        let requested_run = purpose.requested_run();
         let Some(fence) = &self.append_fence else {
             return Ok(());
         };
-        if prompt_run.is_some_and(|run| run != fence.run_id) {
+        if requested_run.is_some_and(|run| run != fence.run_id) {
             return Err(TranscriptAppendError::StaleRun.into());
         }
         let current = relationship_generation(transaction, session_id)?;
@@ -158,8 +181,8 @@ impl TranscriptLogWriter {
             return Err(TranscriptAppendError::StaleRun.into());
         }
         if let Some(recovery) = load_run_recovery_with_connection(transaction, session_id)? {
-            let installing_successor =
-                prompt_run.is_some() && recovery.status != RunRecoveryStatus::Active;
+            let installing_successor = matches!(purpose, AppendPurpose::RunPrompt(_))
+                && recovery.status != RunRecoveryStatus::Active;
             if !installing_successor
                 && (recovery.run_id != fence.run_id
                     || recovery.status != RunRecoveryStatus::Active
@@ -167,7 +190,10 @@ impl TranscriptLogWriter {
             {
                 return Err(TranscriptAppendError::StaleRun.into());
             }
-        } else if prompt_run.is_none() {
+        } else if !matches!(
+            purpose,
+            AppendPurpose::RunPrompt(_) | AppendPurpose::Terminal
+        ) {
             return Err(TranscriptAppendError::StaleRun.into());
         }
         Ok(())
@@ -187,7 +213,7 @@ impl TranscriptLogWriter {
             &format!("explicit:{operation_id}"),
             expected_start,
             messages,
-            None,
+            AppendPurpose::Messages,
             |_| Ok(()),
         )
     }
@@ -198,7 +224,7 @@ impl TranscriptLogWriter {
         operation_id: &str,
         expected_start: Option<u64>,
         messages: &[Message],
-        prompt_run: Option<&str>,
+        purpose: AppendPurpose<'_>,
         effects: impl Fn(&Transaction<'_>) -> Result<()>,
     ) -> Result<TranscriptAppendReceipt> {
         if messages.is_empty() || operation_id.is_empty() {
@@ -206,7 +232,7 @@ impl TranscriptLogWriter {
         }
         let payload = serde_json::to_vec(&(expected_start, messages))?;
         let digest = format!("{:x}", Sha256::digest(payload));
-        self.commit_transaction(session_id, prompt_run, |transaction| {
+        self.commit_transaction(session_id, purpose, |transaction| {
                 let prior = transaction.query_row(
                     "SELECT digest, start_idx, end_idx, last_message_id FROM transcript_append_receipts WHERE session_id = ?1 AND operation_id = ?2",
                     params![session_id, operation_id], |r| Ok((r.get::<_, String>(0)?, TranscriptAppendReceipt { start_idx: r.get(1)?, end_idx: r.get(2)?, last_message_id: r.get(3)? })),
@@ -254,21 +280,24 @@ impl TranscriptLogWriter {
     pub(super) fn commit_transaction<T>(
         &self,
         session_id: &str,
-        prompt_run: Option<&str>,
+        purpose: AppendPurpose<'_>,
         prepare: impl Fn(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         crate::telemetry::observe_store(
             crate::telemetry::StoreOperation::TranscriptAppend,
-            crate::telemetry::Correlation::session(Some(session_id))
-                .with_run(prompt_run.or(self.append_fence.as_ref().map(|f| f.run_id.as_str()))),
-            || self.commit_transaction_inner(session_id, prompt_run, prepare),
+            crate::telemetry::Correlation::session(Some(session_id)).with_run(
+                purpose
+                    .requested_run()
+                    .or(self.append_fence.as_ref().map(|f| f.run_id.as_str())),
+            ),
+            || self.commit_transaction_inner(session_id, purpose, prepare),
         )
     }
 
     fn commit_transaction_inner<T>(
         &self,
         session_id: &str,
-        prompt_run: Option<&str>,
+        purpose: AppendPurpose<'_>,
         prepare: impl Fn(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let _operation = self
@@ -283,7 +312,7 @@ impl TranscriptLogWriter {
                 let mut connection = open_runtime_connection(&self.store_path)?;
                 let transaction = connection
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                self.validate_append_run(&transaction, session_id, prompt_run)?;
+                self.validate_append_run(&transaction, session_id, purpose)?;
                 let result = prepare(&transaction)?;
                 self.append_fault(AppendFault::BeforeCommit)?;
                 let commit_error = transaction.commit().err().map(anyhow::Error::new);
@@ -310,8 +339,11 @@ impl TranscriptLogWriter {
         #[cfg(test)]
         {
             let mut fault = self.append_fault.lock().unwrap();
-            if *fault == Some(phase) {
-                *fault = None;
+            if let Some((requested, remaining)) = *fault {
+                if requested != phase {
+                    return Ok(());
+                }
+                *fault = (remaining > 1).then_some((phase, remaining - 1));
                 return Err(
                     if matches!(
                         phase,

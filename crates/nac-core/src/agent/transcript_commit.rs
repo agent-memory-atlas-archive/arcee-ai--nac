@@ -25,6 +25,16 @@ impl Agent {
         start_idx: u64,
         messages: &[Message],
     ) -> Result<()> {
+        self.log_transcript_batch_inner(start_idx, messages, false)
+            .await
+    }
+
+    async fn log_transcript_batch_inner(
+        &mut self,
+        start_idx: u64,
+        messages: &[Message],
+        terminal: bool,
+    ) -> Result<()> {
         let Some(sink) = &self.transcript_log else {
             return Ok(());
         };
@@ -43,7 +53,11 @@ impl Agent {
         // of mistaking it for a peer's committed row (issue #146).
         self.pending_log_end = Some(start_idx + batch_len);
         let appended = tokio::task::spawn_blocking(move || {
-            writer.append_batch(&session_id, start_idx, &messages)
+            if terminal {
+                writer.append_terminal_batch(&session_id, start_idx, &messages)
+            } else {
+                writer.append_batch(&session_id, start_idx, &messages)
+            }
         })
         .await
         .map_err(|error| anyhow!("transcript log append task failed: {error}"))?;
@@ -148,19 +162,51 @@ impl Agent {
             let stored_message = message.clone();
             let run_id = run_id.to_string();
             self.steering_append_pending = true;
-            tokio::task::spawn_blocking(move || match inbox_item_id {
-                Some(inbox_item_id) => writer.append_inbox_run_prompt(
-                    &session_id,
-                    idx,
-                    &stored_message,
-                    &run_id,
-                    inbox_item_id,
-                ),
-                None => writer.append_run_prompt(&session_id, idx, &stored_message, &run_id),
+            self.pending_log_end = Some(idx + 1);
+            let appended = tokio::task::spawn_blocking(move || {
+                let append = || match inbox_item_id {
+                    Some(inbox_item_id) => writer.append_inbox_run_prompt(
+                        &session_id,
+                        idx,
+                        &stored_message,
+                        &run_id,
+                        inbox_item_id,
+                    ),
+                    None => writer.append_run_prompt(&session_id, idx, &stored_message, &run_id),
+                };
+                match append() {
+                    Err(error)
+                        if error.downcast_ref::<crate::store::TranscriptAppendError>()
+                            == Some(&crate::store::TranscriptAppendError::CommitUncertain) =>
+                    {
+                        // Keep the exact run/index/inbox identity. A second
+                        // uncertain outcome must not become a new goal run.
+                        append().map_err(|error| {
+                            error.context(crate::store::TranscriptAppendError::CommitUncertain)
+                        })
+                    }
+                    result => result,
+                }
             })
             .await
-            .map_err(|error| anyhow!("run prompt append task failed: {error}"))??;
+            .map_err(|error| anyhow!("run prompt append task failed: {error}"))?;
+            if let Err(error) = appended {
+                let uncertain = error.downcast_ref::<crate::store::TranscriptAppendError>()
+                    == Some(&crate::store::TranscriptAppendError::CommitUncertain);
+                if uncertain {
+                    // Reload will reconcile any canonical prompt. Scheduling
+                    // another logical run before that would duplicate input.
+                    let mut failure =
+                        crate::store::TranscriptAppendError::CommitUncertain.run_failure();
+                    failure.transient = false;
+                    return Err(error.context(failure));
+                }
+                self.steering_append_pending = false;
+                self.pending_log_end = None;
+                return Err(error);
+            }
             self.steering_append_pending = false;
+            self.pending_log_end = None;
             self.committed_log_len = idx + 1;
             self.event_sink.emit_transcript_appended(idx + 1);
         }
@@ -173,6 +219,17 @@ impl Agent {
     pub(super) async fn push_batch_and_log(&mut self, messages: Vec<Message>) -> Result<()> {
         let start_idx = self.messages.len() as u64;
         self.log_transcript_batch(start_idx, &messages).await?;
+        self.messages.extend(messages);
+        Ok(())
+    }
+
+    pub(super) async fn push_terminal_batch_and_log(
+        &mut self,
+        messages: Vec<Message>,
+    ) -> Result<()> {
+        let start_idx = self.messages.len() as u64;
+        self.log_transcript_batch_inner(start_idx, &messages, true)
+            .await?;
         self.messages.extend(messages);
         Ok(())
     }

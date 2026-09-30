@@ -40,7 +40,7 @@ fn transcript_append_fault_windows_retry_once_and_restart_agrees() {
     ] {
         let (_dir, path) = setup();
         let writer = TranscriptLogWriter::new(&path).unwrap();
-        *writer.append_fault.lock().unwrap() = Some(phase);
+        *writer.append_fault.lock().unwrap() = Some((phase, 1));
         let messages = [message("one"), message("two")];
         let first = writer.append_idempotent("session", "request", None, &messages);
         match phase {
@@ -198,7 +198,7 @@ fn transcript_append_run_prompt_retry_is_atomic_with_recovery_and_owner_fenced()
     let (_dir, path) = setup();
     let lease = Arc::new(SessionOperationLease::try_acquire(&path, "session").unwrap());
     let writer = TranscriptLogWriter::for_run(&path, "session", "run", &lease).unwrap();
-    *writer.append_fault.lock().unwrap() = Some(AppendFault::AfterCommitBeforeAck);
+    *writer.append_fault.lock().unwrap() = Some((AppendFault::AfterCommitBeforeAck, 1));
     assert!(writer
         .append_run_prompt("session", 0, &message("prompt"), "run")
         .is_err());
@@ -352,7 +352,7 @@ fn transcript_append_steer_and_inbox_ack_loss_replay_delivery_once() {
     let queued =
         create_session_inbox_item(&path, "session", InboxDelivery::Queue, "prompt", None, None)
             .unwrap();
-    *writer.append_fault.lock().unwrap() = Some(AppendFault::AfterCommitBeforeAck);
+    *writer.append_fault.lock().unwrap() = Some((AppendFault::AfterCommitBeforeAck, 1));
     assert!(writer
         .append_inbox_run_prompt("session", 0, &message("prompt"), "run", queued.id)
         .is_err());
@@ -368,7 +368,7 @@ fn transcript_append_steer_and_inbox_ack_loss_replay_delivery_once() {
         None,
     )
     .unwrap();
-    *writer.append_fault.lock().unwrap() = Some(AppendFault::AfterCommitBeforeAck);
+    *writer.append_fault.lock().unwrap() = Some((AppendFault::AfterCommitBeforeAck, 1));
     assert!(writer
         .append_pending_inbox_steers("session", "run", 1)
         .is_err());
@@ -397,7 +397,7 @@ fn transcript_append_steer_and_inbox_ack_loss_replay_delivery_once() {
     )
     .unwrap();
     claim_thread_steering(&path, "session", "run").unwrap();
-    *writer.append_fault.lock().unwrap() = Some(AppendFault::UncertainCommit);
+    *writer.append_fault.lock().unwrap() = Some((AppendFault::UncertainCommit, 1));
     writer
         .append_claimed_thread_steering(
             "session",
@@ -449,7 +449,7 @@ fn transcript_append_in_flight_transaction_retains_lease_until_commit() {
                 "prompt",
                 Some(0),
                 &[message("prompt")],
-                Some("run"),
+                AppendPurpose::RunPrompt("run"),
                 |transaction| {
                     replace_with_active_run(
                         transaction,

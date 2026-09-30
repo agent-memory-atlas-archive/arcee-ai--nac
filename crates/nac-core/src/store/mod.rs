@@ -25,6 +25,7 @@ mod time;
 mod traditional_children;
 mod transcript;
 mod transcript_append;
+use transcript_append::AppendPurpose;
 mod worksets;
 mod workspace_revisions;
 

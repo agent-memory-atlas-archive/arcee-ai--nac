@@ -281,7 +281,7 @@ pub struct TranscriptLogWriter {
     pub(super) operation: Mutex<()>,
     pub(super) append_scope: String,
     #[cfg(test)]
-    pub(super) append_fault: Mutex<Option<super::transcript_append::AppendFault>>,
+    pub(super) append_fault: Mutex<Option<(super::transcript_append::AppendFault, usize)>>,
     #[cfg(test)]
     after_extent_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub(super) append_fence: Option<super::transcript_append::RunAppendFence>,
@@ -461,7 +461,36 @@ impl TranscriptLogWriter {
             &self.append_identity(start_idx, "batch"),
             Some(start_idx),
             messages,
-            None,
+            AppendPurpose::Messages,
+            |_| Ok(()),
+        )
+        .map(|_| ())
+    }
+
+    /// Terminal cleanup may precede prompt commit. It still requires the live
+    /// bound lease and current relationship generation; ordinary messages keep
+    /// requiring the durable active run record.
+    pub(crate) fn append_terminal_batch(
+        &self,
+        session_id: &str,
+        start_idx: u64,
+        messages: &[Message],
+    ) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        if messages
+            .iter()
+            .any(|message| matches!(message, Message::User { .. } | Message::System { .. }))
+        {
+            anyhow::bail!("terminal cleanup cannot append a user or system message");
+        }
+        self.commit_append(
+            session_id,
+            &self.append_identity(start_idx, "terminal"),
+            Some(start_idx),
+            messages,
+            AppendPurpose::Terminal,
             |_| Ok(()),
         )
         .map(|_| ())
@@ -492,7 +521,7 @@ impl TranscriptLogWriter {
             &self.append_identity(start_idx, &effect),
             Some(start_idx),
             messages,
-            None,
+            AppendPurpose::Messages,
             |transaction| {
                 super::steering::acknowledge_thread_steering_batch_with_connection(
                     transaction,
@@ -543,7 +572,7 @@ impl TranscriptLogWriter {
             &identity,
             Some(idx),
             std::slice::from_ref(message),
-            Some(run_id),
+            AppendPurpose::RunPrompt(run_id),
             |transaction| {
                 let submitted_message_id = transaction.last_insert_rowid();
                 replace_with_active_run(transaction, session_id, run_id, submitted_message_id)?;
@@ -566,7 +595,7 @@ impl TranscriptLogWriter {
         start_idx: u64,
     ) -> Result<Vec<SessionInboxRecord>> {
         let identity = format!("inbox:{run_id}:{start_idx}");
-        self.commit_transaction(session_id, Some(run_id), |transaction| {
+        self.commit_transaction(session_id, AppendPurpose::RunMessages(run_id), |transaction| {
         let replay: Option<String> = transaction.query_row(
             "SELECT result_json FROM transcript_append_receipts WHERE session_id = ?1 AND operation_id = ?2",
             params![session_id, identity], |r| r.get(0),

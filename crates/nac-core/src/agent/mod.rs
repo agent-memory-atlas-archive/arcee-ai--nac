@@ -1544,7 +1544,7 @@ impl Agent {
         } else {
             Some(format!("{}\n\n{}", partial.text, RUN_FAILED_PARTIAL_MARKER))
         };
-        self.push_and_log(Message::Assistant {
+        self.push_terminal_batch_and_log(vec![Message::Assistant {
             content,
             reasoning_text: (!partial.reasoning.is_empty()).then_some(partial.reasoning),
             reasoning_details: None,
@@ -1552,7 +1552,7 @@ impl Agent {
             duration_ms: None,
             model_origin: Some(self.client.model_origin()),
             reasoning_field: None,
-        })
+        }])
         .await
     }
 
@@ -1578,7 +1578,7 @@ impl Agent {
             model_origin: None,
             reasoning_field: None,
         });
-        self.push_batch_and_log(messages).await
+        self.push_terminal_batch_and_log(messages).await
     }
 
     fn clear_partial_stream(&self) {
