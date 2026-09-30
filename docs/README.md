@@ -19,5 +19,7 @@ Detailed documentation for nac. The [root README](../README.md) has install, aut
   - [Providers and logins](configuration/credentials.md)
 - [HTTP API](api/http.md)
 - [Managed NAC host](managed/README.md)
+  - [Deterministic managed load](managed/deterministic-load.md)
+  - [Operational telemetry](managed/telemetry.md)
 - [Model request security](security/model-requests.md)
 - [Architecture decisions](architecture/README.md)

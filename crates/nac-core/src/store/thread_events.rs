@@ -1,5 +1,16 @@
 use super::*;
 
+#[cfg(any(test, feature = "test-support"))]
+static OBSERVED_THREAD_EVENT_BUSY_CALLBACKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(any(test, feature = "test-support"))]
+fn observe_thread_event_busy(_attempts: i32) -> bool {
+    OBSERVED_THREAD_EVENT_BUSY_CALLBACKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    true
+}
+
 pub struct ThreadEventWriter {
     store_path: PathBuf,
 }
@@ -61,6 +72,30 @@ pub fn append_thread_event(
     event_json: &str,
 ) -> Result<()> {
     ThreadEventWriter::new(path)?.append(session_id, thread_name, event_json)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_thread_event_busy_observations() {
+    OBSERVED_THREAD_EVENT_BUSY_CALLBACKS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn thread_event_busy_observations() -> usize {
+    OBSERVED_THREAD_EVENT_BUSY_CALLBACKS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn append_thread_event_observing_busy(
+    path: &Path,
+    session_id: &str,
+    thread_name: &str,
+    event_json: &str,
+) -> Result<()> {
+    let connection = ThreadEventWriter::new(path)?.checkout()?;
+    connection
+        .connection
+        .busy_handler(Some(observe_thread_event_busy))?;
+    connection.append(session_id, thread_name, event_json)
 }
 
 #[cfg(test)]
