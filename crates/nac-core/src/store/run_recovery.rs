@@ -308,6 +308,14 @@ pub(crate) fn load_run_recovery_with_connection(
 }
 
 pub fn reconcile_active_run(path: &Path, session_id: &str) -> Result<ActiveRunReconciliation> {
+    crate::telemetry::observe_store(
+        crate::telemetry::StoreOperation::Recovery,
+        crate::telemetry::Correlation::session(Some(session_id)),
+        || reconcile_active_run_inner(path, session_id),
+    )
+}
+
+fn reconcile_active_run_inner(path: &Path, session_id: &str) -> Result<ActiveRunReconciliation> {
     let mut connection = open_runtime_connection(path)?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

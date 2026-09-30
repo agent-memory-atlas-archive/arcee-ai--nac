@@ -18,7 +18,9 @@ use crate::clone_operation_store::{
 };
 #[cfg(test)]
 use crate::clone_process::canonical_remote_identity;
-use crate::clone_process::{sanitize_error, CloneCancellation, CloneProgress, GitCloneProcess};
+use crate::clone_process::{
+    sanitize_error, CloneCancellation, CloneProgress, GitCloneProcess, ManagedChildProcessObserver,
+};
 use crate::github::ManagedGitHubAuth;
 use nac_contracts::{NewProject, ProjectRecord};
 
@@ -130,6 +132,25 @@ impl ManagedCloneService {
         )
     }
 
+    pub fn new_with_process_observer(
+        repository_root: impl AsRef<Path>,
+        state_root: impl AsRef<Path>,
+        home_root: impl AsRef<Path>,
+        project_registrar: Arc<dyn ProjectRegistrar>,
+        github: Option<ManagedGitHubAuth>,
+        observer: Arc<dyn ManagedChildProcessObserver>,
+    ) -> Result<Self> {
+        Self::new_with_git_executable_and_observer(
+            repository_root,
+            state_root,
+            home_root,
+            project_registrar,
+            github,
+            PathBuf::from("git"),
+            Some(observer),
+        )
+    }
+
     fn new_with_git_executable(
         repository_root: impl AsRef<Path>,
         state_root: impl AsRef<Path>,
@@ -137,6 +158,26 @@ impl ManagedCloneService {
         project_registrar: Arc<dyn ProjectRegistrar>,
         github: Option<ManagedGitHubAuth>,
         git_executable: PathBuf,
+    ) -> Result<Self> {
+        Self::new_with_git_executable_and_observer(
+            repository_root,
+            state_root,
+            home_root,
+            project_registrar,
+            github,
+            git_executable,
+            None,
+        )
+    }
+
+    fn new_with_git_executable_and_observer(
+        repository_root: impl AsRef<Path>,
+        state_root: impl AsRef<Path>,
+        home_root: impl AsRef<Path>,
+        project_registrar: Arc<dyn ProjectRegistrar>,
+        github: Option<ManagedGitHubAuth>,
+        git_executable: PathBuf,
+        observer: Option<Arc<dyn ManagedChildProcessObserver>>,
     ) -> Result<Self> {
         std::fs::create_dir_all(repository_root.as_ref()).with_context(|| {
             format!(
@@ -164,7 +205,11 @@ impl ManagedCloneService {
                 repository_root,
                 operation_store,
                 project_registrar,
-                git: GitCloneProcess::new(git_executable, home_root.as_ref().to_path_buf()),
+                git: GitCloneProcess::new(
+                    git_executable,
+                    home_root.as_ref().to_path_buf(),
+                    observer,
+                ),
                 github,
                 live: StdMutex::new(HashMap::new()),
             }),
@@ -470,6 +515,7 @@ impl ManagedCloneService {
                 cancellation,
                 progress,
                 token.as_ref(),
+                &prepared.operation.operation_id,
             )
             .await?;
         if cancellation.is_cancelled() {

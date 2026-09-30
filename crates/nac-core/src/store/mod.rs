@@ -113,20 +113,71 @@ pub fn set_test_schema_version(path: &Path, version: i64) -> Result<()> {
 /// Retry a store write that hit SQLITE_BUSY / SQLITE_LOCKED. `busy_timeout`
 /// already waits on BUSY; LOCKED (and a BUSY that outlived the timeout)
 /// still needs a short outer retry, which session create and steering share.
-pub fn retry_busy<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
+pub fn retry_busy<T>(operation: impl FnMut() -> Result<T>) -> Result<T> {
+    retry_busy_correlated(crate::telemetry::Correlation::default(), operation)
+}
+
+pub fn retry_busy_correlated<T>(
+    correlation: crate::telemetry::Correlation,
+    mut operation: impl FnMut() -> Result<T>,
+) -> Result<T> {
     const RETRY_DELAYS: [std::time::Duration; 4] = [
         std::time::Duration::from_millis(20),
         std::time::Duration::from_millis(50),
         std::time::Duration::from_millis(100),
         std::time::Duration::from_millis(200),
     ];
+    let started = std::time::Instant::now();
+    let mut attempts = 0_u64;
     for delay in RETRY_DELAYS {
         match operation() {
-            Err(error) if is_sqlite_busy(&error) => std::thread::sleep(delay),
-            result => return result,
+            Err(error) if is_sqlite_busy(&error) => {
+                attempts = attempts.saturating_add(1);
+                crate::telemetry::emit_store_duration(
+                    crate::telemetry::StoreOperation::Retry,
+                    correlation.clone(),
+                    started.elapsed(),
+                    crate::telemetry::TelemetryOutcome::Conflict,
+                    crate::telemetry::store_error_identity(error.as_ref()),
+                );
+                std::thread::sleep(delay);
+            }
+            result => {
+                if attempts > 0 {
+                    crate::telemetry::emit_store_duration(
+                        crate::telemetry::StoreOperation::Retry,
+                        correlation,
+                        started.elapsed(),
+                        if result.is_ok() {
+                            crate::telemetry::TelemetryOutcome::Ok
+                        } else {
+                            crate::telemetry::TelemetryOutcome::Error
+                        },
+                        result.as_ref().err().and_then(|error| {
+                            crate::telemetry::store_error_identity(error.as_ref())
+                        }),
+                    );
+                }
+                return result;
+            }
         }
     }
-    operation()
+    let result = operation();
+    crate::telemetry::emit_store_duration(
+        crate::telemetry::StoreOperation::Retry,
+        correlation,
+        started.elapsed(),
+        if result.is_ok() {
+            crate::telemetry::TelemetryOutcome::Ok
+        } else {
+            crate::telemetry::TelemetryOutcome::Error
+        },
+        result
+            .as_ref()
+            .err()
+            .and_then(|error| crate::telemetry::store_error_identity(error.as_ref())),
+    );
+    result
 }
 
 /// How a dispatch ended.

@@ -47,7 +47,7 @@ pub(crate) use prompt_rendering::{
     render_general_child_system_prompt,
 };
 use prompt_rendering::{render_orchestrator_system_prompt, render_worker_system_prompt};
-use tool_exec::execute_tools_parallel;
+use tool_exec::{execute_tools_parallel, finalize_tool_results};
 pub(crate) use transcript_state::truncate_incomplete_tool_turn;
 use transcript_state::{
     acquire_transcript_operation_lease_and_snapshot, append_to_initial_system_message,
@@ -146,6 +146,7 @@ fn light_model_prompt_guidance(light: &ModelClient) -> String {
 
 pub struct Agent {
     client: ModelClient,
+    mode: AgentMode,
     pub messages: Vec<Message>,
     tool_defs: Vec<ToolDefinition>,
     admission_controlled_tools: bool,
@@ -386,6 +387,7 @@ impl Agent {
         let committed_log_len = messages.len() as u64;
         Ok(Self {
             client,
+            mode,
             messages,
             tool_defs,
             admission_controlled_tools: mode == AgentMode::Direct,
@@ -575,6 +577,20 @@ impl Agent {
             Option<i64>,
         )>,
     ) -> Result<String> {
+        let correlation =
+            crate::telemetry::Correlation::session(self.tool_runtime.session_id.as_deref())
+                .with_run(session_run.as_ref().map(|(run_id, _, _)| run_id.as_str()));
+        let _runtime_activity = match self.mode {
+            AgentMode::Orchestrator => Some(crate::telemetry::RuntimeActivityGuard::start(
+                crate::telemetry::RuntimeActivity::Orchestrator,
+                correlation,
+            )),
+            AgentMode::Worker => Some(crate::telemetry::RuntimeActivityGuard::start(
+                crate::telemetry::RuntimeActivity::Worker,
+                correlation,
+            )),
+            AgentMode::Direct => None,
+        };
         self.emit(AgentEvent::RunStarted {
             thread_name: self.thread_name.clone(),
             prompt_preview: preview(prompt, 160),
@@ -1948,52 +1964,6 @@ impl Agent {
     fn emit(&self, event: AgentEvent) {
         self.event_sink.emit(event);
     }
-}
-
-fn finalize_tool_results(
-    messages: &[Message],
-    results: Vec<(String, String, ToolResult)>,
-    event_sink: &EventSink,
-    thread_name: &Option<String>,
-) -> Vec<Message> {
-    let mut transcript_image_stats = Ok(crate::tool_content::ImageStats::default());
-    for message in messages {
-        if let Message::Tool { content, .. } = message {
-            transcript_image_stats =
-                transcript_image_stats.and_then(|stats| stats.checked_add(content.image_stats()));
-        }
-    }
-    results
-        .into_iter()
-        .map(|(tool_call_id, tool_name, mut result)| {
-            let was_image_result = result.content.contains_images();
-            if was_image_result {
-                let next_stats = transcript_image_stats
-                    .as_ref()
-                    .map_err(Clone::clone)
-                    .and_then(|stats| stats.checked_add(result.content.image_stats()));
-                match next_stats {
-                    Ok(stats) => transcript_image_stats = Ok(stats),
-                    Err(_) => {
-                        result = ToolResult::text(
-                            "Error: image_limit_exceeded: image history limit reached",
-                            true,
-                        );
-                    }
-                }
-                event_sink.emit(AgentEvent::tool_call_finished(
-                    thread_name.clone(),
-                    tool_call_id.clone(),
-                    tool_name,
-                    &result,
-                ));
-            }
-            Message::Tool {
-                tool_call_id,
-                content: result.content,
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

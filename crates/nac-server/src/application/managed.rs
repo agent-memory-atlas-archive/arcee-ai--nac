@@ -12,8 +12,8 @@ use nac_core::{
     sessions::SessionSnapshot,
 };
 use nac_managed::{
-    HostSecretStore, HostSecretSummary, ManagedHostConfig, ManagedModelCredentialSource,
-    ProjectRegistrar, ReadinessCheck,
+    HostSecretStore, HostSecretSummary, ManagedChildProcessLease, ManagedChildProcessObserver,
+    ManagedHostConfig, ManagedModelCredentialSource, ProjectRegistrar, ReadinessCheck,
 };
 
 use crate::SessionManager;
@@ -513,13 +513,25 @@ pub(crate) fn clone_service(
     config: &ManagedHostConfig,
     store_path: &Path,
 ) -> Result<nac_managed::ManagedCloneService> {
-    nac_managed::ManagedCloneService::new(
+    nac_managed::ManagedCloneService::new_with_process_observer(
         &config.repository_root,
         &config.state_root,
         &config.home_root,
         Arc::new(StoreProjectRegistrar::new(store_path)),
         Some(config.github_auth()?),
+        Arc::new(ManagedTelemetryProcessObserver),
     )
+}
+
+struct ManagedTelemetryProcessObserver;
+
+impl ManagedChildProcessObserver for ManagedTelemetryProcessObserver {
+    fn start(&self, pid: Option<u32>, operation_id: &str) -> Box<dyn ManagedChildProcessLease> {
+        Box::new(nac_core::telemetry::ChildProcessGuard::start(
+            pid,
+            nac_core::telemetry::Correlation::default().with_run(Some(operation_id)),
+        ))
+    }
 }
 
 /// Managed secret administration use cases. Values remain write-only and the

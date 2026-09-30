@@ -203,6 +203,16 @@ impl TerminalManager {
             .map(|(path, session_id, _)| (path.clone(), session_id.clone()))
     }
 
+    fn telemetry_correlation(&self) -> crate::telemetry::Correlation {
+        let session_id = self
+            .session_resource_authority
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, session_id)| session_id.clone());
+        crate::telemetry::Correlation::session(session_id.as_deref())
+    }
+
     pub(crate) fn acquire_workspace_activity_lease(
         &self,
     ) -> Result<Option<crate::sessions::WorkspaceActivityLease>> {

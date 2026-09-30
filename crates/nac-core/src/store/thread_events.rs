@@ -15,12 +15,18 @@ impl ThreadEventConnection {
         thread_name: &str,
         event_json: &str,
     ) -> Result<()> {
-        self.connection.execute(
-            "INSERT INTO thread_events (session_id, thread_name, event_json, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, thread_name, event_json, now_utc()],
-        )?;
-        Ok(())
+        crate::telemetry::observe_store(
+            crate::telemetry::StoreOperation::EventPersistence,
+            crate::telemetry::Correlation::session(Some(session_id)),
+            || {
+                self.connection.execute(
+                    "INSERT INTO thread_events (session_id, thread_name, event_json, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![session_id, thread_name, event_json, now_utc()],
+                )?;
+                Ok(())
+            },
+        )
     }
 }
 impl ThreadEventWriter {

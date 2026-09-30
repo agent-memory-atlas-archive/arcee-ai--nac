@@ -38,6 +38,7 @@ pub struct TerminalSession {
     retained: bool,
     _workspace_activity: Option<crate::sessions::WorkspaceActivityLease>,
     _session_resource: Option<crate::sessions::SessionResourceLease>,
+    _telemetry_child: Option<crate::telemetry::ChildProcessGuard>,
     /// Remote process-tree cleanup: backends that return a pidfile from
     /// `terminal_pty_command` get a backend-side kill on session teardown.
     backend_cleanup: Option<(Arc<ExecutionBackend>, String)>,
@@ -195,6 +196,7 @@ impl TerminalSession {
             retained: false,
             _workspace_activity: None,
             _session_resource: None,
+            _telemetry_child: None,
             backend_cleanup,
             durable_cleanup,
             cwd: resolved_cwd,
@@ -315,6 +317,13 @@ impl TerminalSession {
 
     pub fn pid(&self) -> Option<u32> {
         self.child.process_id()
+    }
+
+    pub(super) fn attach_child_telemetry(&mut self, correlation: crate::telemetry::Correlation) {
+        self._telemetry_child = Some(crate::telemetry::ChildProcessGuard::start(
+            self.pid(),
+            correlation,
+        ));
     }
 
     #[cfg(test)]

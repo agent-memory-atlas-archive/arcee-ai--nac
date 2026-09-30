@@ -74,6 +74,7 @@ pub mod session_service;
 pub mod sessions;
 mod skills;
 pub mod store;
+pub mod telemetry;
 mod terminal;
 mod tool_content;
 mod tools;
@@ -85,6 +86,9 @@ pub mod view;
 mod worker;
 mod worker_credentials;
 pub mod workspace;
+
+#[cfg(test)]
+mod telemetry_tests;
 
 /// Largest token count that can be persisted exactly and transported through
 /// JavaScript-backed public settings without precision loss.

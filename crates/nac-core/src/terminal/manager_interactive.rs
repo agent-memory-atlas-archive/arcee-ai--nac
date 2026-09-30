@@ -146,7 +146,7 @@ impl TerminalManager {
         let info = match cancellation {
             Some(cancellation) => cancellation
                 .run_if_active(|| {
-                    let session = TerminalSession::spawn(
+                    let mut session = TerminalSession::spawn(
                         name.clone(),
                         command,
                         cwd,
@@ -157,13 +157,14 @@ impl TerminalManager {
                         extra_envs,
                         self.remote_cleanup_persistence(),
                     )?;
+                    session.attach_child_telemetry(self.telemetry_correlation());
                     let info = self.session_info(&name, &session);
                     sessions.insert(name.clone(), session);
                     Ok::<_, anyhow::Error>(info)
                 })
                 .ok_or_else(|| anyhow!("terminal command cancelled before PTY spawn"))??,
             None => {
-                let session = TerminalSession::spawn(
+                let mut session = TerminalSession::spawn(
                     name.clone(),
                     command,
                     cwd,
@@ -174,6 +175,7 @@ impl TerminalManager {
                     extra_envs,
                     self.remote_cleanup_persistence(),
                 )?;
+                session.attach_child_telemetry(self.telemetry_correlation());
                 let info = self.session_info(&name, &session);
                 sessions.insert(name, session);
                 info

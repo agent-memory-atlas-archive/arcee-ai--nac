@@ -25,32 +25,38 @@ pub fn append_episode_with_status(
     content: &str,
     status: EpisodeStatus,
 ) -> Result<()> {
-    let mut conn = open_runtime_connection(path)?;
-    let tx = conn.transaction()?;
-    ensure_thread_in_tx(&tx, session_id, thread_name)?;
+    crate::telemetry::observe_store(
+        crate::telemetry::StoreOperation::WorkerEpisodeCommit,
+        crate::telemetry::Correlation::session(Some(session_id)),
+        || {
+            let mut conn = open_runtime_connection(path)?;
+            let tx = conn.transaction()?;
+            ensure_thread_in_tx(&tx, session_id, thread_name)?;
 
-    tx.execute(
-        "INSERT INTO episodes (thread_name, session_id, action, content, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            thread_name,
-            session_id,
-            action,
-            content,
-            status.as_str(),
-            now_utc()
-        ],
-    )?;
+            tx.execute(
+                "INSERT INTO episodes (thread_name, session_id, action, content, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    thread_name,
+                    session_id,
+                    action,
+                    content,
+                    status.as_str(),
+                    now_utc()
+                ],
+            )?;
 
-    tx.execute(
-        "UPDATE threads
-         SET updated_at = ?1
-         WHERE name = ?2 AND session_id = ?3",
-        params![now_utc(), thread_name, session_id],
-    )?;
+            tx.execute(
+                "UPDATE threads
+                 SET updated_at = ?1
+                 WHERE name = ?2 AND session_id = ?3",
+                params![now_utc(), thread_name, session_id],
+            )?;
 
-    tx.commit()?;
-    Ok(())
+            tx.commit()?;
+            Ok(())
+        },
+    )
 }
 
 pub fn load_worker_context(

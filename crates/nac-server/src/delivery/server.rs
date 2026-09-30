@@ -109,6 +109,58 @@ async fn reject_foreign_host(
     }
 }
 
+fn bounded_route_class(path: &str) -> &'static str {
+    match path {
+        "/health" => "/health",
+        "/healthz" => "/healthz",
+        "/readyz" => "/readyz",
+        "/" | "/app" => "/app",
+        _ if path.starts_with("/sessions/") => "/sessions/{route}",
+        _ if path.starts_with("/projects/") => "/projects/{route}",
+        _ if path.starts_with("/managed/") => "/managed/{route}",
+        _ if path.starts_with("/auth/") => "/auth/{route}",
+        _ if path.starts_with("/assets/") => "/assets/{path}",
+        _ if path.starts_with("/docs") => "/docs/{path}",
+        "/mcp" => "/mcp",
+        _ => "/other",
+    }
+}
+
+fn request_correlation(path: &str) -> nac_core::telemetry::Correlation {
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    let session = matches!(parts.first(), Some(&"sessions"))
+        .then(|| parts.get(1).copied())
+        .flatten();
+    let run = parts
+        .iter()
+        .position(|part| *part == "runs")
+        .and_then(|index| parts.get(index + 1).copied());
+    nac_core::telemetry::Correlation::session(session).with_run(run)
+}
+
+async fn record_http_latency(request: axum::extract::Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| bounded_route_class(&path).to_string());
+    let correlation = request_correlation(&path);
+    let started = Instant::now();
+    let response = next.run(request).await;
+    nac_core::telemetry::emit_http_duration(
+        &route,
+        correlation,
+        started.elapsed(),
+        if response.status().is_server_error() {
+            nac_core::telemetry::TelemetryOutcome::Error
+        } else {
+            nac_core::telemetry::TelemetryOutcome::Ok
+        },
+    );
+    response
+}
+
 fn is_safe_method(method: &axum::http::Method) -> bool {
     method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
@@ -415,6 +467,7 @@ pub fn router(manager: SessionManager) -> Router {
 fn secure_public_router(router: Router, manager: SessionManager) -> Router {
     router
         .layer(response_compression_layer())
+        .layer(middleware::from_fn(record_http_latency))
         .layer(middleware::from_fn_with_state(
             manager,
             enforce_managed_admission,
@@ -436,6 +489,7 @@ fn managed_migration_recovery_router(manager: SessionManager) -> Router {
         )
         .with_state(manager)
         .layer(response_compression_layer())
+        .layer(middleware::from_fn(record_http_latency))
         .layer(middleware::from_fn(reject_cross_origin_mutation))
         .layer(middleware::from_fn_with_state(
             Arc::new(configured_allowed_hosts()),

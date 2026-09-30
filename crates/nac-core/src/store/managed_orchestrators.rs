@@ -426,13 +426,34 @@ pub fn settle_managed_orchestrator_run(
     run_id: &str,
     mut terminal: ManagedOrchestratorTerminal,
 ) -> Result<ManagedOrchestratorSettlement> {
+    crate::telemetry::observe_store(
+        crate::telemetry::StoreOperation::TerminalSettlement,
+        crate::telemetry::Correlation::session(Some(orchestrator_session_id))
+            .with_run(Some(run_id)),
+        || {
+            settle_managed_orchestrator_run_inner(
+                path,
+                orchestrator_session_id,
+                run_id,
+                &mut terminal,
+            )
+        },
+    )
+}
+
+fn settle_managed_orchestrator_run_inner(
+    path: &Path,
+    orchestrator_session_id: &str,
+    run_id: &str,
+    terminal: &mut ManagedOrchestratorTerminal,
+) -> Result<ManagedOrchestratorSettlement> {
     if !terminal.status.is_terminal() {
         return Err(anyhow!(
             "managed orchestrator settlement requires terminal status"
         ));
     }
-    terminal.report = truncate_optional(terminal.report);
-    terminal.failure = truncate_optional(terminal.failure);
+    terminal.report = truncate_optional(terminal.report.take());
+    terminal.failure = truncate_optional(terminal.failure.take());
     let mut connection = open_runtime_connection(path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let current = load_with_connection(&transaction, orchestrator_session_id)?

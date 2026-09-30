@@ -15,6 +15,18 @@ use crate::GitHubAccessToken;
 
 const MAX_PROGRESS_BYTES: usize = 64 * 1024;
 
+/// Harness-independent lease returned by a managed child-process observer.
+/// Dropping the lease marks the process observation complete.
+pub trait ManagedChildProcessLease: Send {}
+
+impl<T: Send> ManagedChildProcessLease for T {}
+
+/// Composition port for observing managed processes without depending on the
+/// agent harness or a concrete telemetry exporter.
+pub trait ManagedChildProcessObserver: Send + Sync {
+    fn start(&self, pid: Option<u32>, operation_id: &str) -> Box<dyn ManagedChildProcessLease>;
+}
+
 pub(crate) type CloneProgress = Arc<StdMutex<String>>;
 
 #[derive(Clone, Default)]
@@ -27,6 +39,7 @@ pub(crate) struct CloneCancellation {
 pub(crate) struct GitCloneProcess {
     executable: PathBuf,
     home_root: PathBuf,
+    observer: Option<Arc<dyn ManagedChildProcessObserver>>,
 }
 
 impl CloneCancellation {
@@ -55,13 +68,22 @@ impl CloneCancellation {
 }
 
 impl GitCloneProcess {
-    pub(crate) fn new(executable: PathBuf, home_root: PathBuf) -> Self {
+    pub(crate) fn new(
+        executable: PathBuf,
+        home_root: PathBuf,
+        observer: Option<Arc<dyn ManagedChildProcessObserver>>,
+    ) -> Self {
         Self {
             executable,
             home_root,
+            observer,
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "clone execution keeps process inputs, cancellation, output, credentials, and attribution explicit"
+    )]
     pub(crate) async fn run(
         &self,
         clone_url: &str,
@@ -70,6 +92,7 @@ impl GitCloneProcess {
         cancellation: &CloneCancellation,
         progress: CloneProgress,
         token: Option<&GitHubAccessToken>,
+        operation_id: &str,
     ) -> Result<()> {
         let mut command = Command::new(&self.executable);
         command
@@ -91,6 +114,10 @@ impl GitCloneProcess {
             .kill_on_drop(true);
         let (mut child, mut process_tree) = ProcessTreeGuard::spawn_supervised(&mut command)
             .context("failed to spawn managed Git clone")?;
+        let _process_observation = self
+            .observer
+            .as_ref()
+            .map(|observer| observer.start(child.id(), operation_id));
         let stdout = child
             .stdout
             .take()

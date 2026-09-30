@@ -312,6 +312,10 @@ pub(super) async fn run_worker(
         .then(|| prepare_worker_credential_channel(&mut command))
         .transpose()?;
     let (mut child, mut process_tree) = ProcessTreeGuard::spawn_supervised(&mut command)?;
+    let _child_activity = crate::telemetry::ChildProcessGuard::start(
+        child.id(),
+        crate::telemetry::Correlation::session(Some(invocation.session_id)),
+    );
     let mut control_stdin = child.stdin.take();
     let credential_sender = match credential_channel {
         Some(channel) => Some(channel.into_sender(child.id())?),
@@ -351,6 +355,10 @@ pub(super) async fn run_worker(
             }
             if line == crate::worker::MANAGED_WORKER_CANCEL_ACK {
                 let _ = cancel_ack_tx.send(true);
+                continue;
+            }
+            if is_worker_telemetry_line(&line) {
+                eprintln!("{line}");
                 continue;
             }
             if let Some(event) = decode_stderr_event(&line) {
@@ -571,6 +579,11 @@ pub(super) async fn run_worker(
     })
 }
 
+fn is_worker_telemetry_line(line: &str) -> bool {
+    line.strip_prefix(crate::telemetry::JSON_LINE_PREFIX)
+        .is_some_and(|payload| serde_json::from_str::<serde_json::Value>(payload).is_ok())
+}
+
 /// Next line of a worker pipe. A line that does not decode as UTF-8 (a
 /// subprocess writing raw bytes to the inherited pipe) is skipped rather than
 /// ending the pump, so the worker's remaining events still reach the UI.
@@ -599,6 +612,15 @@ mod tests {
     use std::path::PathBuf;
 
     const NATIVE_CREDENTIAL_CANARY: &str = "exa-worker-private-socket-canary";
+
+    #[test]
+    fn worker_telemetry_lines_are_reserved_and_must_be_valid_json() {
+        assert!(is_worker_telemetry_line(
+            "nac-telemetry {\"name\":\"nac.runtime.resource.sample\"}"
+        ));
+        assert!(!is_worker_telemetry_line("nac-telemetry not-json"));
+        assert!(!is_worker_telemetry_line("ordinary worker output"));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

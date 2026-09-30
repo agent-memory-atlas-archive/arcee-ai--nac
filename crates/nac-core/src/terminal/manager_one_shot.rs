@@ -169,6 +169,16 @@ impl TerminalManager {
                 };
             }
         };
+        let telemetry_session = self
+            .session_resource_authority
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, session_id)| session_id.clone());
+        let _child_activity = crate::telemetry::ChildProcessGuard::start(
+            child.id(),
+            crate::telemetry::Correlation::session(telemetry_session.as_deref()),
+        );
         let stdout = child.stdout.take().expect("piped stdout is present");
         let stderr = child.stderr.take().expect("piped stderr is present");
         let (sender, mut receiver) = mpsc::channel(PIPE_CHANNEL_CHUNKS);

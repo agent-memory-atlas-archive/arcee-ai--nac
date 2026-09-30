@@ -78,6 +78,52 @@ pub(super) async fn execute_tools_parallel(
     .await
 }
 
+pub(super) fn finalize_tool_results(
+    messages: &[Message],
+    results: Vec<(String, String, ToolResult)>,
+    event_sink: &EventSink,
+    thread_name: &Option<String>,
+) -> Vec<Message> {
+    let mut transcript_image_stats = Ok(crate::tool_content::ImageStats::default());
+    for message in messages {
+        if let Message::Tool { content, .. } = message {
+            transcript_image_stats =
+                transcript_image_stats.and_then(|stats| stats.checked_add(content.image_stats()));
+        }
+    }
+    results
+        .into_iter()
+        .map(|(tool_call_id, tool_name, mut result)| {
+            let was_image_result = result.content.contains_images();
+            if was_image_result {
+                let next_stats = transcript_image_stats
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|stats| stats.checked_add(result.content.image_stats()));
+                match next_stats {
+                    Ok(stats) => transcript_image_stats = Ok(stats),
+                    Err(_) => {
+                        result = ToolResult::text(
+                            "Error: image_limit_exceeded: image history limit reached",
+                            true,
+                        );
+                    }
+                }
+                event_sink.emit(AgentEvent::tool_call_finished(
+                    thread_name.clone(),
+                    tool_call_id.clone(),
+                    tool_name,
+                    &result,
+                ));
+            }
+            Message::Tool {
+                tool_call_id,
+                content: result.content,
+            }
+        })
+        .collect()
+}
+
 type IndexedToolCall = (usize, String, String, String);
 
 fn admission_groups(other_calls: Vec<IndexedToolCall>) -> Vec<Vec<IndexedToolCall>> {
