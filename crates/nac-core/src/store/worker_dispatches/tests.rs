@@ -227,15 +227,48 @@ fn worker_host_crash_restart_distinguishes_pending_from_ack_loss() {
 }
 
 #[test]
-fn worker_receipt_migration_preserves_previous_episode_history() {
+fn worker_receipt_migration_v30_to_v31_preserves_episode_and_transcript_receipts() {
     let (path, _) = fixture();
     append_episode(&path, "session", "old", "legacy", "retained").unwrap();
+    let writer = TranscriptLogWriter::new(&path).unwrap();
+    let message = crate::types::Message::User {
+        content: "retained transcript".into(),
+    };
+    writer.append("session", 0, &message).unwrap();
     let conn = open_runtime_connection(&path).unwrap();
-    conn.execute_batch("DROP TABLE worker_dispatches; PRAGMA user_version=29;")
+    let receipt_before: String = conn
+        .query_row(
+            "SELECT digest FROM transcript_append_receipts WHERE session_id = 'session'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("DROP TABLE worker_dispatches; PRAGMA user_version=30;")
         .unwrap();
     drop(conn);
     initialize(&path).unwrap();
     initialize(&path).unwrap();
+    let conn = open_runtime_connection(&path).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        31
+    );
+    let receipt_after: String = conn
+        .query_row(
+            "SELECT digest FROM transcript_append_receipts WHERE session_id = 'session'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_before, receipt_after);
+    assert_eq!(
+        serde_json::to_string(&writer.read_from("session", 0).unwrap()[0].1).unwrap(),
+        serde_json::to_string(&message).unwrap()
+    );
+    writer.append("session", 0, &message).unwrap();
+    assert_eq!(writer.read_from("session", 0).unwrap().len(), 1);
+    drop(conn);
     assert_eq!(
         thread_read(&path, "session", "old").unwrap()[0].content,
         "retained"
