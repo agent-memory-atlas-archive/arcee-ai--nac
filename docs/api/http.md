@@ -17,14 +17,14 @@ temporary package is deliberately registry-free and cannot be published:
 ```json
 {
   "dependencies": {
-    "@arcee-ai/nac-client-all-121": "git+https://github.com/arcee-ai/nac.git#<full-commit-sha>"
+    "@arcee-ai/nac-client-all-121": "https://codeload.github.com/arcee-ai/nac/tar.gz/<full-commit-sha>"
   }
 }
 ```
 
-Commit the consumer's `package-lock.json`; npm records the resolved full Git
-revision. Installing the package requires no local NAC checkout, lifecycle
-script, or runtime dependency. The checked-in package exposes `NacClient`,
+Commit the consumer's `package-lock.json`; npm records the exact source URL and
+archive integrity. Installing the package requires no local NAC checkout,
+lifecycle script, or runtime dependency. The checked-in package exposes `NacClient`,
 `NacTransport`, explicit command-admission and error contracts,
 snapshot/cursor replay, `subscribeToSessionEvents`, and the auth-capable SSE
 adapter seam. Its OpenAPI type subset is generated from the same Rust-owned
