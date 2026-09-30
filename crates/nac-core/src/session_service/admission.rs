@@ -269,6 +269,13 @@ impl SessionService {
                         error
                             .downcast_ref::<crate::run_failure::RunFailure>()
                             .cloned()
+                            .or_else(|| {
+                                error.chain().find_map(|cause| {
+                                    cause
+                                        .downcast_ref::<crate::store::TranscriptAppendError>()
+                                        .map(crate::store::TranscriptAppendError::run_failure)
+                                })
+                            })
                             .unwrap_or_else(|| {
                                 crate::run_failure::RunFailure::unknown(error.to_string())
                             })
@@ -565,6 +572,20 @@ impl SessionService {
                     })?;
                 }
             }
+        }
+        let operation_lease = operation_lease.map(Arc::new);
+        if let Some(lease) = operation_lease.as_ref() {
+            self.agent
+                .try_lock()
+                .map_err(|_| SessionSubmitError::Coordination {
+                    message: SessionCoordinationError::local_agent_busy(),
+                })?
+                .bind_transcript_run(active_run.run_id.as_str(), lease)
+                .map_err(|error| SessionSubmitError::Coordination {
+                    message: SessionCoordinationError::store(format!(
+                        "failed to bind transcript append authority: {error:#}"
+                    )),
+                })?;
         }
         *guard = Some(ActiveSessionOperation::Run(ActiveRunState {
             snapshot: active_run.clone(),

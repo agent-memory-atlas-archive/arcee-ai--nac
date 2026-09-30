@@ -327,7 +327,6 @@ async fn cached_manager_snapshot_reconciles_peer_interruption_once() {
     let manager = test_manager(&root);
     let cached = manager.attach_session("session").await.unwrap();
 
-    let peer_lease = sessions::SessionOperationLease::try_acquire(&store_path, "session").unwrap();
     nac_core::store::TranscriptLogWriter::new(&store_path)
         .unwrap()
         .append_run_prompt(
@@ -339,7 +338,6 @@ async fn cached_manager_snapshot_reconciles_peer_interruption_once() {
             "peer-run",
         )
         .unwrap();
-    drop(peer_lease);
 
     let recovered = manager.snapshot("session").await.unwrap();
     assert!(recovered.transcript_recovery_warning.is_none());
@@ -398,7 +396,6 @@ async fn cached_manager_reconciles_peer_interruption_before_resubmission() {
     let manager = test_manager(&root);
     let cached = manager.attach_session("session").await.unwrap();
 
-    let peer_lease = sessions::SessionOperationLease::try_acquire(&store_path, "session").unwrap();
     nac_core::store::TranscriptLogWriter::new(&store_path)
         .unwrap()
         .append_run_prompt(
@@ -410,7 +407,6 @@ async fn cached_manager_reconciles_peer_interruption_before_resubmission() {
             "peer-run",
         )
         .unwrap();
-    drop(peer_lease);
 
     let submitted = manager
         .submit_prompt(

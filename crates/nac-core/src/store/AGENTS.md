@@ -30,6 +30,9 @@ workspace revisions, recovery markers, and cross-process coordination.
 - `schema.rs` / `schema_tests.rs` — migrations and complete schema contract.
 - `transcript.rs`, `thread_events.rs`, `threads.rs`, `worksets.rs` — durable
   execution history.
+- `transcript_append.rs` — identified transcript transactions, run/generation
+  fencing and uncertain-commit reconciliation; `transcript_append_tests.rs`
+  owns deterministic append fault and concurrency contracts.
 - `traditional_children.rs`, `managed_orchestrators.rs` — distinct relationship
   topologies and completion state.
 - `session_inbox.rs`, `session_goals.rs`, `steering.rs` — durable continuation.

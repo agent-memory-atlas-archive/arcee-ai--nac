@@ -24,6 +24,7 @@ mod threads;
 mod time;
 mod traditional_children;
 mod transcript;
+mod transcript_append;
 mod worksets;
 mod workspace_revisions;
 
@@ -60,6 +61,7 @@ pub use thread_events::*;
 pub use threads::*;
 pub use traditional_children::*;
 pub use transcript::*;
+pub use transcript_append::{TranscriptAppendError, TranscriptAppendReceipt};
 pub use worksets::*;
 pub use workspace_revisions::*;
 

@@ -684,6 +684,7 @@ async fn restore_heals_a_partial_gap_recovery_that_left_the_blob_long() {
         "the reported blob is exactly the blob the repair persisted"
     );
 
+    drop(held_lease);
     // The wedge: without the rewrite the next append would require
     // start_idx == 7 while the agent only held 6 messages.
     agent
@@ -856,6 +857,72 @@ async fn direct_failure_marks_streamed_partial_output_as_failed_in_the_log() {
     assert_eq!(read_log(&store_path, "session").len(), 3);
     assert!(agent.partial_stream.lock().unwrap().is_empty());
 
+    let _ = std::fs::remove_dir_all(store_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn direct_failure_replays_unacknowledged_assistant_without_duplicate_partial() {
+    let store_path = test_store_path("direct_lost_assistant_ack");
+    crate::store::initialize(&store_path).unwrap();
+    crate::store::insert_test_session(&store_path, "session");
+    let mut agent = transcript_test_agent(
+        ModelClient::new_for_test(),
+        store_path.clone(),
+        Some("session"),
+        AgentMode::Direct,
+    );
+    store_snapshot_messages(&store_path, &agent.messages);
+    agent.committed_log_len = agent.messages.len() as u64;
+    agent.push_and_log(user_message("prompt")).await.unwrap();
+    *agent.partial_stream.lock().unwrap() = ModelStreamDelta {
+        text: "complete streamed answer".to_string(),
+        ..ModelStreamDelta::default()
+    };
+    agent
+        .transcript_log
+        .as_ref()
+        .unwrap()
+        .writer
+        .lose_next_append_ack_for_test();
+    let assistant = Message::Assistant {
+        content: Some("complete streamed answer".to_string()),
+        reasoning_text: None,
+        reasoning_details: None,
+        tool_calls: None,
+        duration_ms: Some(12),
+        model_origin: None,
+        reasoning_field: None,
+    };
+    let error = agent.push_and_log(assistant).await.unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<crate::store::TranscriptAppendError>(),
+        Some(&crate::store::TranscriptAppendError::CommitUncertain)
+    );
+    assert_eq!(agent.committed_log_len, 2);
+    assert_eq!(agent.messages.len(), 2);
+    assert_eq!(read_log(&store_path, "session").len(), 2);
+
+    agent
+        .normalize_failed_tail_preserving_partial()
+        .await
+        .unwrap();
+    assert_eq!(agent.messages.len(), 3);
+    assert_eq!(crate::sessions::visible_message_count(&agent.messages), 2);
+    assert!(agent.partial_stream.lock().unwrap().is_empty());
+    let canonical = serde_json::to_string(&agent.messages).unwrap();
+    assert!(!canonical.contains(RUN_FAILED_PARTIAL_MARKER));
+    let mut restarted = transcript_test_agent(
+        ModelClient::new_for_test(),
+        store_path.clone(),
+        Some("session"),
+        AgentMode::Direct,
+    );
+    restarted.reload_transcript_from_store().await.unwrap();
+    assert_eq!(
+        serde_json::to_string(&restarted.messages).unwrap(),
+        canonical
+    );
+    assert_eq!(read_log(&store_path, "session").len(), 2);
     let _ = std::fs::remove_dir_all(store_path.parent().unwrap());
 }
 
@@ -1249,6 +1316,7 @@ async fn refresh_transcript_under_lease_adopts_peer_appends() {
         matches!(agent.messages[4], Message::Assistant { content: Some(ref text), .. } if text == "peer answer")
     );
 
+    drop(lease);
     // The run's first append lands contiguously at the refreshed length.
     agent
         .push_and_log_for_test(user_message("survivor prompt"))
@@ -1309,6 +1377,7 @@ async fn refresh_transcript_under_lease_normalizes_a_crashed_peers_dangling_turn
         "the crashed peer's dangling tool-call row is trimmed under the lease"
     );
     assert_eq!(log[0].0, 3);
+    drop(lease);
 
     agent
         .push_and_log_for_test(user_message("survivor prompt"))
