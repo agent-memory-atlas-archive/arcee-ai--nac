@@ -1,10 +1,8 @@
-// Thin typed client over the nac-server REST API.
-//
-// Requests are always same-origin: in production nac-web serves this bundle
-// itself, and in development the Vite proxy forwards the API routes to it.
+// Compatibility facade over the endpoint-aware NAC client. New session
+// transport behavior belongs in nacClient.ts; existing feature owners keep
+// their stable method names while the bounded surface migrates.
 
-import type { JsonObject } from "@/app/lib/json";
-import { isString } from "@/app/lib/primitive";
+import { ApiError, nacClient } from "@/app/services/nacClient";
 import type {
   AssignSessionRequest,
   BranchList,
@@ -64,7 +62,6 @@ import type {
   ProviderModelList,
   ProviderModelsRequest,
   RawSessionConfig,
-  RecentEventsResponse,
   ReorderProjectsRequest,
   ReorderProjectsResponse,
   ReorderSessionsRequest,
@@ -105,19 +102,7 @@ import type {
   WorkspaceRevisionChanges,
 } from "@/app/types/api";
 
-export class ApiError extends Error {
-  readonly status: number;
-  readonly method: string;
-  readonly path: string;
-
-  constructor(status: number, method: string, path: string, detail: string) {
-    super(detail ? `${detail} (HTTP ${status})` : `HTTP ${status}`);
-    this.name = "ApiError";
-    this.status = status;
-    this.method = method;
-    this.path = path;
-  }
-}
+export { ApiError };
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -127,66 +112,12 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-/** Every handler that fails answers with `{ "error": string }`. */
-async function errorDetail(res: Response): Promise<string> {
-  try {
-    const text = await res.text();
-    if (!text) return res.statusText;
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (Object(parsed) === parsed && !Array.isArray(parsed)) {
-        // SAFETY: the identity check above admits only non-null JSON objects.
-        const record = parsed as JsonObject;
-        const error = record.error;
-        if (isString(error)) return error;
-        const detail = record.detail;
-        if (isString(detail)) return detail;
-        const title = record.title;
-        if (isString(title)) return title;
-      }
-    } catch {
-      // Not JSON; the raw body is the best detail available.
-    }
-    return text;
-  } catch {
-    return res.statusText;
-  }
-}
-
 async function request<T>(
   method: Method,
   path: string,
   { body, headers, signal }: RequestOptions = {},
 ): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: {
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...headers,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
-
-  if (!res.ok) {
-    throw new ApiError(res.status, method, path, await errorDetail(res));
-  }
-
-  // Several mutations answer 200/202 with an empty body.
-  if (res.status === 204) {
-    // SAFETY: a 204 has no body by definition, so the caller's T must accept
-    // undefined for this endpoint.
-    return undefined as T;
-  }
-  const contentType = res.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    const text = await res.text();
-    // SAFETY: non-JSON endpoints answer with plain text (or nothing); the
-    // caller's T is the text contract for that endpoint.
-    return (text ? text : undefined) as T;
-  }
-  // SAFETY: the endpoint's JSON body is the caller's T by contract.
-  return (await res.json()) as T;
+  return nacClient.transport.request<T>(method, path, { body, headers, signal });
 }
 
 const sessionPath = (id: string) => `/sessions/${encodeURIComponent(id)}`;
@@ -500,25 +431,8 @@ export const api = {
     return request<ManagedSessionSummary[]>("GET", `/sessions${query}`, { signal });
   },
 
-  getSession: (id: string, options: SessionSnapshotOptions = {}) => {
-    const params = new URLSearchParams();
-    if (options.messageLimit !== undefined) {
-      params.set("message_limit", String(options.messageLimit));
-    }
-    if (options.threadEventLimit !== undefined) {
-      params.set("thread_event_limit", String(options.threadEventLimit));
-    }
-    if (options.includeSessions !== undefined) {
-      params.set("include_sessions", String(options.includeSessions));
-    }
-    if (options.includeSystem) params.set("include_system", "true");
-    const query = params.toString();
-    return request<SessionSnapshotResponse>(
-      "GET",
-      `${sessionPath(id)}${query ? `?${query}` : ""}`,
-      { signal: options.signal },
-    );
-  },
+  getSession: (id: string, options: SessionSnapshotOptions = {}) =>
+    nacClient.getSession(id, options),
 
   createSession: (payload: CreateSessionRequest) =>
     request<SessionSnapshotResponse>("POST", "/sessions", { body: payload }),
@@ -735,10 +649,7 @@ export const api = {
   generateOverview: (id: string) =>
     request<{ session_id: string; summary: string }>("POST", `${sessionPath(id)}/overview`),
 
-  submitRun: (id: string, prompt: string) =>
-    request<SubmitPromptResponse>("POST", `${sessionPath(id)}/runs`, {
-      body: { prompt },
-    }),
+  submitRun: (id: string, prompt: string) => nacClient.submitPrompt(id, prompt),
 
   cancelActiveRun: (id: string) => request<void>("POST", `${sessionPath(id)}/cancel-active-run`),
 
@@ -785,20 +696,5 @@ export const api = {
       limit?: number;
       signal?: AbortSignal;
     } = {},
-  ) => {
-    const params = new URLSearchParams();
-    if (options.cursor !== undefined) {
-      params.set("after_epoch_id", options.cursor.epoch_id);
-      params.set("after_sequence_id", String(options.cursor.sequence_id));
-    }
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
-    const query = params.toString();
-    return request<RecentEventsResponse>(
-      "GET",
-      `${sessionPath(id)}/events${query ? `?${query}` : ""}`,
-      { signal: options.signal },
-    );
-  },
-
-  eventStreamUrl: (id: string) => `${sessionPath(id)}/events/stream`,
+  ) => nacClient.getRecentEvents(id, options),
 };

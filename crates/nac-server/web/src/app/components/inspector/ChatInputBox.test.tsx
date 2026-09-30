@@ -246,9 +246,13 @@ beforeEach(() => {
   fakes.listCommands.mockReset().mockImplementation(() => pending());
   fakes.listSessionSkills.mockReset().mockImplementation(() => pending());
   fakes.submitRun.mockReset().mockResolvedValue({
-    run_id: "run",
-    client_id: null,
-    display_prompt: "prompt",
+    status: "accepted",
+    requestId: "request-run",
+    response: {
+      run_id: "run",
+      client_id: null,
+      display_prompt: "prompt",
+    },
   });
   fakes.steerOrchestrator.mockReset().mockResolvedValue({ status: "queued" });
   fakes.compactSession.mockReset().mockResolvedValue({
@@ -638,9 +642,9 @@ describe("direct inbox and goal journeys", () => {
 
   it("preserves a steer drafted while the initial run submission settles", async () => {
     const submitted = Promise.withResolvers<{
-      run_id: string;
-      client_id: null;
-      display_prompt: string;
+      status: "accepted";
+      requestId: string;
+      response: { run_id: string; client_id: null; display_prompt: string };
     }>();
     fakes.submitRun.mockReturnValue(submitted.promise);
     const textarea = composer({ behavior: "direct" });
@@ -649,7 +653,15 @@ describe("direct inbox and goal journeys", () => {
     await waitFor(() => expect(fakes.submitRun).toHaveBeenCalled());
 
     type(textarea, "drafted steer");
-    submitted.resolve({ run_id: "run-live", client_id: null, display_prompt: "start the run" });
+    submitted.resolve({
+      status: "accepted",
+      requestId: "request-live",
+      response: {
+        run_id: "run-live",
+        client_id: null,
+        display_prompt: "start the run",
+      },
+    });
 
     await waitFor(() => expect(textarea.value).toBe("drafted steer"));
   });

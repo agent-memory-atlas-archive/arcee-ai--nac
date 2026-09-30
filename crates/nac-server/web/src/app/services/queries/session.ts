@@ -26,6 +26,7 @@ import {
   withUpdatedSummary,
 } from "@/app/lib/sessionOrder";
 import { api } from "@/app/services/api";
+import { UncertainCommandAdmissionError } from "@/app/services/nacClient";
 import { useQueryInvalidators } from "@/app/services/queries/invalidation";
 import { queryKeys, SESSIONS_POLL_MS, WORKSPACE_STATS_POLL_MS } from "@/app/services/queries/keys";
 import {
@@ -373,12 +374,24 @@ export function useUpdateConfig() {
 export function useSubmitRun() {
   const invalidate = useQueryInvalidators();
   return useMutation({
-    mutationFn: ({ id, prompt }: { id: string; prompt: string }) => api.submitRun(id, prompt),
+    mutationFn: async ({ id, prompt }: { id: string; prompt: string }) => {
+      const admission = await api.submitRun(id, prompt);
+      if (admission.status === "accepted") return admission.response;
+      if (admission.status === "not-sent") {
+        throw new DOMException("Prompt submission was cancelled before it was sent.", "AbortError");
+      }
+      throw new UncertainCommandAdmissionError(admission.requestId, admission.error);
+    },
     onMutate: ({ prompt }) => {
       setOptimisticUserPrompt(prompt);
     },
-    onError: () => {
-      setOptimisticUserPrompt(null);
+    onError: (error, { id }) => {
+      if (error instanceof UncertainCommandAdmissionError) {
+        fenceSessionSnapshot(id, true);
+        void invalidate.sessionRoot(id);
+      } else {
+        setOptimisticUserPrompt(null);
+      }
     },
     onSuccess: (_data, { id }) => invalidate.session(id),
   });

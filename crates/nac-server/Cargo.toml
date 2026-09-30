@@ -28,7 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server"] }
-tower-http = { version = "0.6", features = ["compression-gzip"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "cors"] }
 uuid = { workspace = true, features = ["v4"] }
 utoipa.workspace = true
 utoipa-axum = "0.2"

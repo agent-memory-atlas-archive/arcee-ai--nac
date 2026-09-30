@@ -4,7 +4,8 @@ use std::{collections::BTreeMap, io::Read};
 use crate::application::{request_validation::RequestConfigurationError, Field};
 use crate::delivery::server::{
     asset_cache_control, bare_host, host_is_allowed, is_non_rebindable_host,
-    response_compression_layer, serve_listener_with_shutdown, ALLOWED_HOSTS_ENV, ASSETS,
+    response_compression_layer, serve_listener_with_shutdown, ALLOWED_HOSTS_ENV,
+    ALLOWED_ORIGINS_ENV, ASSETS,
 };
 
 use axum::{
@@ -94,6 +95,7 @@ impl ScopedModelEnv {
             "OPENAI_BASE_URL",
             "SECOND_API_KEY",
             ALLOWED_HOSTS_ENV,
+            ALLOWED_ORIGINS_ENV,
         ];
         let original = names
             .into_iter()
@@ -125,6 +127,7 @@ impl ScopedModelEnv {
             std::env::remove_var("OPENAI_BASE_URL");
             std::env::remove_var("SECOND_API_KEY");
             std::env::remove_var(ALLOWED_HOSTS_ENV);
+            std::env::remove_var(ALLOWED_ORIGINS_ENV);
         }
         Self { original }
     }
