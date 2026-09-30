@@ -136,11 +136,13 @@ container infrastructure as an explicit coverage gap, not a passing result.
 - Rust routes and `utoipa` schemas are the API source of truth.
   `make generate-api-contract` is the sole writer for
   `crates/nac-server/web/openapi.json` and
-  `crates/nac-server/web/src/app/types/openapi.generated.ts`. Never edit the
-  generated TypeScript by hand; `make test-api-contract` checks drift.
+  `crates/nac-server/web/src/app/types/openapi.generated.ts`, plus the bounded
+  `crates/nac-server/web/packages/nac-client/src/openapi.generated.ts` subset.
+  Never edit generated TypeScript by hand; `make test-api-contract` checks drift.
 - The web build is the sole writer for committed
-  `crates/nac-server/assets/dist/`. Commit source and rebuilt assets together;
-  `make test-assets` fails on drift.
+  `crates/nac-server/assets/dist/` and the experimental client package's
+  `dist/`. Commit source and rebuilt outputs together; `make test-assets` fails
+  on drift.
 - Keep `Cargo.lock` consistent with workspace manifests. Do not hand-edit it.
 - `nac-catalog-gen` is the sole writer for
   `crates/nac-core/src/model/catalog/data/catalog.json` and

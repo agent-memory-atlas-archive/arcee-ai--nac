@@ -117,15 +117,15 @@ test-api-contract:
 	$(CARGO) run --locked -p nac-server --example export-openapi -- --check $(WEB_DIR)/openapi.json
 	npm --prefix $(WEB_DIR) run check:api
 
-# Mirrors the release workflow: the bundle under assets/dist is committed, so a
-# stale one has to fail here rather than in CI.
+# Mirrors the release workflow: the browser bundle and experimental ALL-121
+# client package are committed, so stale build output has to fail here.
 test-assets: test-api-contract
 	npm --prefix $(WEB_DIR) run lint
 	npm --prefix $(WEB_DIR) run typecheck
 	npm --prefix $(WEB_DIR) run build
-	@if [ -n "$$(git status --porcelain -- crates/$(PKG)/assets/dist)" ]; then \
-		printf '%s\n' "error: crates/$(PKG)/assets/dist is stale; commit the rebuilt bundle"; \
-		git status --porcelain -- crates/$(PKG)/assets/dist; \
+	@if [ -n "$$(git status --porcelain -- crates/$(PKG)/assets/dist $(WEB_DIR)/packages/nac-client/dist)" ]; then \
+		printf '%s\n' "error: committed web/client build output is stale; rebuild and commit it"; \
+		git status --porcelain -- crates/$(PKG)/assets/dist $(WEB_DIR)/packages/nac-client/dist; \
 		exit 1; \
 	fi
 

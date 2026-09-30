@@ -5,7 +5,7 @@ import {
   createNacClient,
   NacClientConfigurationError,
   NacVersionMismatchError,
-} from "@/app/services/nacClient";
+} from "./nacClient.js";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
