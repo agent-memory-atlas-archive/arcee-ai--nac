@@ -782,6 +782,58 @@ fn transcript_log_read_tail_window_fails_loudly_on_gaps_and_foreign_rows() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+fn window_reader_with_peer_append(path: &Path) -> TranscriptLogWriter {
+    initialize(path).unwrap();
+    crate::store::insert_test_session(path, "session-a");
+    let writer = TranscriptLogWriter::new(path).unwrap();
+    writer
+        .append_batch("session-a", 0, &sample_messages()[..2])
+        .unwrap();
+    open_runtime_connection(path).unwrap().execute(
+        "UPDATE thread_events SET created_at = CAST(json_extract(event_json, '$.nac_transcript_message.idx') AS TEXT)", [],
+    ).unwrap();
+    let peer_path = path.to_path_buf();
+    *writer.after_extent_read.lock().unwrap() = Some(Box::new(move || {
+        // A separate writer commits after the extent SELECT completes and
+        // before the DESC/OFFSET page SELECT starts. No scheduling sleeps.
+        TranscriptLogWriter::new(&peer_path)
+            .unwrap()
+            .append(
+                "session-a",
+                2,
+                &Message::User {
+                    content: "peer append".into(),
+                },
+            )
+            .unwrap();
+    }));
+    writer
+}
+
+#[test]
+fn transcript_log_window_uses_one_snapshot_during_peer_append() {
+    let path = temp_store_path("window_snapshot");
+    let writer = window_reader_with_peer_append(&path);
+    let (extent, rows) = writer.read_tail_window("session-a", 0, 0, 2).unwrap();
+    assert_eq!(extent, 2);
+    assert_eq!(
+        rows.iter().map(|(idx, _)| *idx).collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert_eq!(writer.read_from("session-a", 0).unwrap().len(), 3);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn transcript_log_window_times_use_one_snapshot_during_peer_append() {
+    let path = temp_store_path("window_times_snapshot");
+    let writer = window_reader_with_peer_append(&path);
+    let times = writer.read_tail_window_times("session-a", 0, 0, 2).unwrap();
+    assert_eq!(times, vec!["0", "1"]);
+    assert_eq!(writer.read_from("session-a", 0).unwrap().len(), 3);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 #[test]
 fn transcript_log_reads_fail_loudly_on_foreign_rows() {
     let path = temp_store_path("foreign_rows");

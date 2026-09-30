@@ -282,12 +282,14 @@ pub struct TranscriptLogWriter {
     pub(super) append_scope: String,
     #[cfg(test)]
     pub(super) append_fault: Mutex<Option<super::transcript_append::AppendFault>>,
+    #[cfg(test)]
+    after_extent_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub(super) append_fence: Option<super::transcript_append::RunAppendFence>,
 }
 
 /// Length of the log tail relative to a snapshot blob of `blob_len`, read from
-/// the newest row's `idx`. Callers hold the writer operation lock, so the extent
-/// cannot shift under a window read taken with it.
+/// the newest row's `idx`. Callers must use the same SQLite read transaction
+/// for this probe and the window query; the object lock does not exclude peers.
 fn tail_len_of(connection: &Connection, session_id: &str, blob_len: u64) -> Result<u64> {
     let mut statement = connection.prepare(
         "SELECT id, event_json
@@ -434,6 +436,8 @@ impl TranscriptLogWriter {
             append_fence: None,
             #[cfg(test)]
             append_fault: Mutex::new(None),
+            #[cfg(test)]
+            after_extent_read: Mutex::new(None),
         })
     }
 
@@ -631,8 +635,8 @@ impl TranscriptLogWriter {
     /// tail positions `[tail_start, tail_start + limit)` clamped to the
     /// tail, in log (append) order.
     ///
-    /// The extent probe and the window read run under one writer operation
-    /// lock, so a concurrent append cannot interleave and shift the window. Rowid
+    /// The extent probe and the window read share one SQLite read snapshot,
+    /// so another writer or process cannot shift the selected window. Rowid
     /// order is append order (= `idx` order) under the module invariants, so
     /// the window is an `ORDER BY id DESC LIMIT .. OFFSET ..` read that
     /// decodes only the returned rows — O(page) instead of O(log). The
@@ -649,15 +653,19 @@ impl TranscriptLogWriter {
             .operation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let connection = open_runtime_connection(&self.store_path)?;
-        let tail_len = tail_len_of(&connection, session_id, blob_len)?;
+        let mut connection = open_runtime_connection(&self.store_path)?;
+        let snapshot =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let tail_len = tail_len_of(&snapshot, session_id, blob_len)?;
+        #[cfg(test)]
+        self.after_extent_read_for_test();
         if tail_start >= tail_len || limit == 0 {
             return Ok((tail_len, Vec::new()));
         }
         let end = tail_start.saturating_add(limit as u64).min(tail_len);
         let count = end - tail_start;
         let skip_from_end = tail_len - end;
-        let mut statement = connection.prepare(
+        let mut statement = snapshot.prepare(
             "SELECT id, event_json
              FROM thread_events
              WHERE session_id = ?1 AND thread_name = ?2
@@ -716,15 +724,19 @@ impl TranscriptLogWriter {
             .operation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let connection = open_runtime_connection(&self.store_path)?;
-        let tail_len = tail_len_of(&connection, session_id, blob_len)?;
+        let mut connection = open_runtime_connection(&self.store_path)?;
+        let snapshot =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let tail_len = tail_len_of(&snapshot, session_id, blob_len)?;
+        #[cfg(test)]
+        self.after_extent_read_for_test();
         if tail_start >= tail_len || limit == 0 {
             return Ok(Vec::new());
         }
         let end = tail_start.saturating_add(limit as u64).min(tail_len);
         let count = end - tail_start;
         let skip_from_end = tail_len - end;
-        let mut statement = connection.prepare(
+        let mut statement = snapshot.prepare(
             "SELECT created_at
              FROM thread_events
              WHERE session_id = ?1 AND thread_name = ?2
@@ -743,6 +755,14 @@ impl TranscriptLogWriter {
         let mut times = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         times.reverse();
         Ok(times)
+    }
+
+    #[cfg(test)]
+    fn after_extent_read_for_test(&self) {
+        let hook = self.after_extent_read.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     /// Read the snapshot prefix currently stored on the session row.
