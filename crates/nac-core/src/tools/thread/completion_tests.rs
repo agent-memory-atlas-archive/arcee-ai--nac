@@ -11,6 +11,7 @@ fn completion_process_helper() {
     let Ok(mode) = std::env::var("NAC_COMPLETION_TEST_MODE") else {
         return;
     };
+    println!(); // Keep protocol frames separate from serial libtest progress.
     if mode == "exit_before_send" {
         return;
     }

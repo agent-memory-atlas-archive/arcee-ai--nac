@@ -111,6 +111,9 @@ fn worker_receipt_crash_helper() {
         return;
     };
     let phase = std::env::var("NAC_WORKER_RECEIPT_CRASH_PHASE").unwrap();
+    // Serial libtest prints its progress prefix on the same line. Keep the
+    // parent-observed protocol/barriers on fresh lines in either harness mode.
+    println!();
     let path = PathBuf::from(path);
     let identity = WorkerDispatchIdentity {
         session_id: "session".into(),
