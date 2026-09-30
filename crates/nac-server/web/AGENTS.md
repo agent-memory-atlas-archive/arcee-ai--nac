@@ -11,6 +11,9 @@ server remains the source of business truth and wire schemas.
 - `src/app/services/api.ts` is the HTTP transport adapter. TanStack query keys,
   caching, cancellation, invalidation, and polling belong to query owners, not
   presentational components.
+- `packages/nac-client/` owns the runtime-free ALL-121 typed HTTP/SSE boundary.
+  The standalone service modules are compatibility facades; do not fork its
+  transport, replay, reconnect, or command-admission logic back into the app.
 - `src/app/types/openapi.generated.ts` is generated from Rust/OpenAPI. Import
   stable aliases from `src/app/types/api.ts`; client-only refinements may live
   there, but do not hand-copy wire DTOs.
@@ -60,6 +63,7 @@ npm --prefix crates/nac-server/web run typecheck
 npm --prefix crates/nac-server/web run lint
 npm --prefix crates/nac-server/web run format:check
 npm --prefix crates/nac-server/web test
+npm --prefix crates/nac-server/web run test:client-package
 make test-api-contract
 make test-assets
 make test-e2e
@@ -67,10 +71,12 @@ make test-e2e
 
 ## Generated artifacts and single writers
 
-- `make generate-api-contract` writes `openapi.json` and
-  `src/app/types/openapi.generated.ts`. The generator fails on unsupported
-  schema constructs; extend it explicitly rather than widening to `any`.
-- `npm ... run build` writes `../assets/dist`. Commit source and bundle together.
+- `make generate-api-contract` writes `openapi.json`,
+  `src/app/types/openapi.generated.ts`, and the transitive schema subset under
+  `packages/nac-client/src/`. The generator fails on unsupported schema
+  constructs; extend it explicitly rather than widening to `any`.
+- `npm ... run build` writes `../assets/dist` and
+  `packages/nac-client/dist`. Commit source and both outputs together.
   Do not edit hashed assets by hand.
 - `scripts/sync-file-icons.mjs` is the writer for synchronized icon assets when
   that source set changes.
