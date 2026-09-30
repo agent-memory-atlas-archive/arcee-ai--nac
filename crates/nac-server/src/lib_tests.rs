@@ -975,6 +975,8 @@ mod contract;
 mod lifecycle;
 #[path = "tests/managed_delivery.rs"]
 mod managed_delivery;
+#[path = "tests/managed_load.rs"]
+mod managed_load;
 #[path = "tests/managed_topology.rs"]
 mod managed_topology;
 #[path = "tests/presentation.rs"]

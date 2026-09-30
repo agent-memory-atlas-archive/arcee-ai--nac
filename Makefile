@@ -1,4 +1,4 @@
-.PHONY: all setup build dev run install-dev release install ci test test-rust test-web test-release test-stable-binary test-source-workflow test-source-binary test-source-size generate-api-contract test-api-contract test-assets test-e2e test-e2e-remote test-durability test-managed-image-contract managed-image test-managed-image check lint fix format-check fmt crate-check crate-test crate-build clean help
+.PHONY: all setup build dev run install-dev release install ci test test-rust test-web test-release test-stable-binary test-source-workflow test-source-binary test-source-size generate-api-contract test-api-contract test-assets test-e2e test-e2e-remote test-durability test-managed-load test-managed-image-contract managed-image test-managed-image check lint fix format-check fmt crate-check crate-test crate-build clean help
 
 CARGO ?= cargo
 PKG := nac-server
@@ -71,7 +71,7 @@ install:
 ci: format-check lint test
 
 ## Run workspace Rust tests, frontend tests, source-size, and web asset checks
-test: test-source-size test-source-workflow test-source-binary test-rust test-web test-release test-assets test-managed-image-contract
+test: test-source-size test-source-workflow test-source-binary test-rust test-web test-release test-assets test-managed-load test-managed-image-contract
 
 test-rust:
 	$(CARGO) test --workspace --locked
@@ -159,6 +159,13 @@ test-durability:
 	$(CARGO) test --locked -p nac-server managed_binding_failure_precedes_run_and_prompt_execution
 	$(CARGO) test --locked -p nac-server parent_attachment_settles_canonical_managed_terminal_once_after_restart
 	$(CARGO) test --locked -p nac-server wrong_parent_relationship_reads_are_opaque_not_found
+
+## Reproduce the deterministic 1/2/4 Managed NAC orchestration load scenario
+test-managed-load:
+	$(CARGO) build --locked -p $(PKG) --bin $(BIN)
+	NAC_MANAGED_LOAD_WORKER="$(CURDIR)/target/debug/$(BIN)" \
+		$(CARGO) test --locked -p nac-server \
+			tests::managed_load::managed_load_scenario -- --ignored --exact --nocapture --test-threads=1
 
 ## Check the managed image/workflow contract without a container runtime
 test-managed-image-contract:
