@@ -1,5 +1,5 @@
 use super::*;
-
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -7,14 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-use serde::Serialize;
-
 const DEFAULT_SEED: u64 = 0xA11_0112;
 const VARIANTS: [usize; 3] = [1, 2, 4];
 const PHASE_TIMEOUT: Duration = Duration::from_secs(20);
 const PROBE_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PlannedOrchestrator {
     ordinal: usize,
@@ -73,13 +69,11 @@ struct PhaseGate {
     state: Mutex<PhaseGateState>,
     ready: Condvar,
 }
-
 struct CompletionGate {
     enabled: bool,
     next_ordinal: Mutex<usize>,
     ready: Condvar,
 }
-
 impl CompletionGate {
     fn new(enabled: bool) -> Self {
         Self {
@@ -108,7 +102,7 @@ impl CompletionGate {
         }
     }
 
-    fn parent_completion_acknowledged(&self) {
+    fn advance(&self) {
         if !self.enabled {
             return;
         }
@@ -122,7 +116,6 @@ struct PhaseGateState {
     arrived: usize,
     released: bool,
 }
-
 impl PhaseGate {
     fn new(expected: usize) -> Self {
         Self {
@@ -191,17 +184,13 @@ struct DeterministicModel {
     requests: Arc<Mutex<Vec<ModelRequest>>>,
     initial_gate: Arc<PhaseGate>,
     worker_gate: Arc<PhaseGate>,
+    completion_gate: Arc<CompletionGate>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     handle: thread::JoinHandle<()>,
 }
-
 impl DeterministicModel {
     fn start(plan: &LogicalPlan) -> Self {
         Self::start_internal(plan, plan.orchestrators.len() * 4, false, true)
-    }
-
-    fn start_concurrent_settlement(plan: &LogicalPlan) -> Self {
-        Self::start_internal(plan, plan.orchestrators.len() * 4, false, false)
     }
 
     fn start_allowing_worker_disconnect(plan: &LogicalPlan, request_count: usize) -> Self {
@@ -223,6 +212,7 @@ impl DeterministicModel {
         let initial_gate_for_server = Arc::clone(&initial_gate);
         let worker_gate_for_server = Arc::clone(&worker_gate);
         let completion_gate = Arc::new(CompletionGate::new(serialize_completions));
+        let completion_gate_for_server = Arc::clone(&completion_gate);
         let requests = Arc::new(Mutex::new(Vec::with_capacity(expected * 4)));
         let requests_for_thread = Arc::clone(&requests);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -248,7 +238,7 @@ impl DeterministicModel {
                 let initial_gate = Arc::clone(&initial_gate_for_server);
                 let worker_gate = Arc::clone(&worker_gate_for_server);
                 let requests = Arc::clone(&requests_for_thread);
-                let completion_gate = Arc::clone(&completion_gate);
+                let completion_gate = Arc::clone(&completion_gate_for_server);
                 handlers.push(thread::spawn(move || {
                     handle_model_request(
                         stream,
@@ -270,16 +260,10 @@ impl DeterministicModel {
             requests,
             initial_gate,
             worker_gate,
+            completion_gate,
             stop,
             handle,
         }
-    }
-
-    async fn wait_for_initial_requests(&self) {
-        let gate = Arc::clone(&self.initial_gate);
-        tokio::task::spawn_blocking(move || gate.wait_until_ready("orchestrator-start requests"))
-            .await
-            .unwrap();
     }
 
     async fn wait_for_initial_request_count(&self, expected_arrivals: usize) {
@@ -291,19 +275,11 @@ impl DeterministicModel {
         .unwrap();
     }
 
-    fn release_initial_requests(&self) {
-        self.initial_gate.release();
-    }
-
     async fn wait_for_worker_requests(&self) {
         let gate = Arc::clone(&self.worker_gate);
         tokio::task::spawn_blocking(move || gate.wait_until_ready("worker requests"))
             .await
             .unwrap();
-    }
-
-    fn release_worker_requests(&self) {
-        self.worker_gate.release();
     }
 
     fn finish(self) -> Vec<ModelRequest> {
@@ -414,9 +390,6 @@ fn handle_model_request(
         }
     } else {
         write_result.expect("write deterministic model response");
-    }
-    if phase == "parent-completion" {
-        completion_gate.parent_completion_acknowledged();
     }
 }
 
@@ -819,9 +792,9 @@ async fn managed_load_scenario() {
         .join("../..")
         .join("target/managed-load");
     std::fs::create_dir_all(&artifact_root).unwrap();
-
     for count in VARIANTS {
-        let evidence = run_variant(&adapter, &worker, seed, count, Duration::ZERO).await;
+        let evidence =
+            run_variant(&adapter, &worker, seed, count, Duration::from_millis(100)).await;
         let artifact =
             artifact_root.join(format!("all-112-seed-{seed}-orchestrators-{count}.json"));
         write_secret_safe_artifact(&artifact, &evidence);
@@ -1156,8 +1129,8 @@ async fn exercise_worker_interruption(
     let response =
         start_planned_orchestrator(router(manager.clone()), &plan.orchestrators[0]).await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    model.wait_for_initial_requests().await;
-    model.release_initial_requests();
+    model.wait_for_initial_request_count(1).await;
+    model.initial_gate.release();
     model.wait_for_worker_requests().await;
 
     let cancelled = tokio::time::timeout(
@@ -1170,7 +1143,7 @@ async fn exercise_worker_interruption(
     .expect("managed worker interruption cancellation should not hang")
     .unwrap();
     assert_eq!(cancelled.status, ManagedOrchestratorStatus::Cancelled);
-    model.release_worker_requests();
+    model.worker_gate.release();
     wait_for_parent_idle(&parent).await;
     let model_requests = model.finish();
     assert_eq!(model_requests.len(), 3);
@@ -1426,7 +1399,7 @@ async fn run_variant_with_mode(
     let model = match mode {
         LoadMode::OrderedHealthy => DeterministicModel::start(&plan),
         LoadMode::ConcurrentSettlementProbe => {
-            DeterministicModel::start_concurrent_settlement(&plan)
+            DeterministicModel::start_internal(&plan, plan.orchestrators.len() * 4, false, false)
         }
     };
     seed_load_parent(&root, model.base_url.clone());
@@ -1468,14 +1441,42 @@ async fn run_variant_with_mode(
             model.wait_for_initial_request_count(index + 1).await;
         }
     }
-    model.wait_for_initial_requests().await;
+    model
+        .wait_for_initial_request_count(orchestrator_count)
+        .await;
     let mut probe_samples = probe_pair(&app, "orchestrator-barrier").await;
     tokio::time::sleep(phase_delay).await;
-    model.release_initial_requests();
+    model.initial_gate.release();
     model.wait_for_worker_requests().await;
     probe_samples.extend(probe_pair(&app, "worker-barrier").await);
     tokio::time::sleep(phase_delay).await;
-    model.release_worker_requests();
+    model.worker_gate.release();
+    if mode == LoadMode::OrderedHealthy {
+        for (ordinal, entry) in plan.orchestrators.iter().enumerate() {
+            wait_for_relation_status(
+                &root.join("store.db"),
+                &entry.session_id,
+                ManagedOrchestratorStatus::Completed,
+            )
+            .await;
+            tokio::time::timeout(PHASE_TIMEOUT, async {
+                loop {
+                    let rows = nac_core::store::TranscriptLogWriter::new(&root.join("store.db"))
+                        .unwrap()
+                        .read_from("all112-parent", 0)
+                        .unwrap()
+                        .len();
+                    if rows == (ordinal + 1) * 2 && !parent_service.has_active_operation() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("ordered parent completion should commit before the next worker response");
+            model.completion_gate.advance();
+        }
+    }
     while let Some(response) = launches.join_next().await {
         let response = response.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
