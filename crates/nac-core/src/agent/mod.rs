@@ -1440,6 +1440,10 @@ impl Agent {
         }
         self.committed_log_len = merged.len() as u64;
         self.restore_messages(merged);
+        // Failed reads or validation must leave recovery tokens available
+        // for another reload rather than letting cleanup delete unseen rows.
+        self.direct_inbox_append_start = None;
+        self.steering_append_pending = false;
         Ok(())
     }
 
@@ -1468,9 +1472,7 @@ impl Agent {
     /// next restore re-normalizes the stale tail.
     pub async fn normalize_dangling_tail(&mut self) -> Result<()> {
         self.reconcile_unacknowledged_message().await?;
-        if self.direct_inbox_append_start.take().is_some()
-            || std::mem::take(&mut self.steering_append_pending)
-        {
+        if self.direct_inbox_append_start.is_some() || self.steering_append_pending {
             return self.reload_transcript_from_store().await;
         }
         if self.durable_log_has_rows_past_own_commits().await? {
@@ -1500,9 +1502,7 @@ impl Agent {
     /// logs while the resulting transcript remains valid provider history.
     pub async fn append_cancellation_marker_preserving_tools(&mut self) -> Result<()> {
         self.reconcile_unacknowledged_message().await?;
-        if self.direct_inbox_append_start.take().is_some()
-            || std::mem::take(&mut self.steering_append_pending)
-        {
+        if self.direct_inbox_append_start.is_some() || self.steering_append_pending {
             // A direct steer delivery transaction may have committed after
             // the run task was aborted. Its User row and delivered inbox state
             // are one durable fact; adopt the row before adding cancellation.

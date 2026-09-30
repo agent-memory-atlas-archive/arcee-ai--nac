@@ -1011,6 +1011,65 @@ async fn fenced_prompt_persistent_uncertainty_never_requests_a_new_logical_run()
 }
 
 #[tokio::test]
+async fn fenced_prompt_failed_reload_retains_canonical_input_on_retry() {
+    for cancelling in [false, true] {
+        let path = test_store_path("prompt_reload_retry");
+        let (mut agent, _lease) = fenced_prompt_agent(&path);
+        let run_id = SessionRunId::from_stored("prompt-run".into());
+        agent
+            .transcript_log
+            .as_ref()
+            .unwrap()
+            .writer
+            .lose_append_acks_for_test(2);
+        agent
+            .push_and_log_run_prompt(user_message("retain this prompt"), &run_id, None)
+            .await
+            .unwrap_err();
+        // A real SQLite read failure after commit, without altering the row.
+        let connection = crate::store::open_runtime_connection(&path).unwrap();
+        connection
+            .execute_batch("ALTER TABLE thread_events RENAME TO unavailable_events")
+            .unwrap();
+        if cancelling {
+            agent
+                .append_cancellation_marker_preserving_tools()
+                .await
+                .unwrap_err();
+        } else {
+            agent.normalize_dangling_tail().await.unwrap_err();
+        }
+        assert_eq!(agent.committed_log_len, 1);
+        assert_eq!(agent.pending_log_end, Some(2));
+        assert!(agent.steering_append_pending);
+        connection
+            .execute_batch("ALTER TABLE unavailable_events RENAME TO thread_events")
+            .unwrap();
+        if cancelling {
+            agent
+                .append_cancellation_marker_preserving_tools()
+                .await
+                .unwrap();
+        } else {
+            agent.normalize_dangling_tail().await.unwrap();
+        }
+        let terminal_count = usize::from(cancelling);
+        assert_eq!(read_log(&path, "session").len(), 1 + terminal_count);
+        assert_eq!(agent.messages.len(), 2 + terminal_count);
+        assert_eq!(agent.committed_log_len, (2 + terminal_count) as u64);
+        assert!(
+            matches!(&agent.messages[1], Message::User { content, .. } if content == "retain this prompt")
+        );
+        assert!(!agent.steering_append_pending);
+        assert!(agent.pending_log_end.is_none());
+        assert!(crate::store::load_run_recovery(&path, "session")
+            .unwrap()
+            .is_some());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+}
+
+#[tokio::test]
 async fn fenced_pre_prompt_cancel_persists_its_terminal_marker() {
     let path = test_store_path("pre_prompt_cancel");
     let (mut agent, lease) = fenced_prompt_agent(&path);
