@@ -5,11 +5,15 @@ use std::time::{Duration, Instant};
 
 mod managed_tables;
 mod model_configurations;
+mod transcript_tables;
 mod wal_preflight;
 
 pub(super) use managed_tables::create_managed_maintenance_tables;
 use managed_tables::create_terminal_remote_cleanups_table;
 use model_configurations::create_model_configurations_table;
+use transcript_tables::{
+    create_session_run_recovery_table, create_transcript_append_receipts_table,
+};
 
 #[cfg(test)]
 #[path = "schema/startup_tests.rs"]
@@ -25,6 +29,8 @@ mod future_schema_tests;
 
 use wal_preflight::read_schema_version_header;
 
+// 31 adds host-owned worker dispatch admission and atomic episode receipts.
+// 30 adds transactional transcript append replay receipts.
 // 29 adds the public-HTTP opt-in to reusable configurations and durable sessions.
 // 28 adds typed run-failure and bounded goal-retry metadata.
 // 27 composes the independently shipped v25 Managed NAC maintenance schema and
@@ -47,7 +53,7 @@ use wal_preflight::read_schema_version_header;
 // early whenever the stored version already equals this one. (12 carries the
 // same schema as 11, which added episodes.status; 10 added the
 // ssh_configurations table; 9 the per-session ssh port and key columns.)
-const STORE_SCHEMA_VERSION: i64 = 29;
+const STORE_SCHEMA_VERSION: i64 = 31;
 const HTTP_OPT_IN_COLUMN: &str = "INTEGER NOT NULL DEFAULT 0 CHECK (allow_insecure_http IN (0, 1))";
 pub const MINIMUM_MIGRATABLE_SCHEMA_VERSION: i64 = 0;
 
@@ -846,7 +852,7 @@ fn open_connection_with_hooks(
             transaction.execute_batch("DROP TABLE IF EXISTS session_overviews")?;
         }
         2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20
-        | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | STORE_SCHEMA_VERSION => {}
+        | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | STORE_SCHEMA_VERSION => {}
         unsupported => {
             return Err(anyhow!(
                 "unsupported store schema version {unsupported}; this build supports versions {MINIMUM_MIGRATABLE_SCHEMA_VERSION} through {STORE_SCHEMA_VERSION}"
@@ -964,6 +970,7 @@ fn open_connection_with_hooks(
     create_projects_tables(&transaction)?;
     create_ssh_configurations_table(&transaction)?;
     create_session_run_recovery_table(&transaction)?;
+    create_transcript_append_receipts_table(&transaction)?;
     ensure_column(
         &transaction,
         "session_run_recovery",
@@ -1012,6 +1019,7 @@ fn open_connection_with_hooks(
         "accepted_identity_json",
         "TEXT",
     )?;
+    super::worker_dispatches::create_worker_dispatches_table(&transaction)?;
     verify_auxiliary_foreign_keys(&transaction)?;
 
     before_commit()?;
@@ -1550,27 +1558,6 @@ fn rebuild_session_forks_without_source_fk(conn: &Connection) -> Result<()> {
              ON session_forks(source_session_id, source_message_idx);
          CREATE UNIQUE INDEX IF NOT EXISTS idx_session_forks_fork
              ON session_forks(fork_session_id);",
-    )?;
-    Ok(())
-}
-
-/// One content-free recovery obligation per session. The submitted transcript
-/// row remains the unique source for the prompt; this table only says which
-/// run owns it and whether that run is active, interrupted, failed, or has a
-/// canonical terminal result whose relationship settlement is still owed.
-fn create_session_run_recovery_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS session_run_recovery (
-             session_id TEXT PRIMARY KEY
-                 REFERENCES sessions(session_id) ON DELETE CASCADE,
-             run_id TEXT NOT NULL CHECK (length(trim(run_id)) > 0),
-             submitted_message_id INTEGER NOT NULL
-                 REFERENCES thread_events(id) ON DELETE CASCADE,
-             status TEXT NOT NULL CHECK (status IN ('active', 'interrupted', 'failed')),
-             terminal_disposition TEXT
-                 CHECK (terminal_disposition IN ('completed', 'cancelled')),
-             failure_json TEXT
-         );",
     )?;
     Ok(())
 }

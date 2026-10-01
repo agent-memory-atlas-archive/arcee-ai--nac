@@ -7,6 +7,8 @@ use crate::store;
 use crate::tools::{require_str, require_string_array, ToolResult, ToolRuntime};
 use crate::types::{ToolDefinition, TOOL_CALL_CANCELLED_MARKER};
 
+#[cfg(test)]
+mod completion_tests;
 mod worker;
 #[cfg(test)]
 pub(crate) use worker::worker_model_arguments_for_test;
@@ -248,11 +250,57 @@ pub async fn execute_parsed_dispatch(
         source_threads: source_threads.clone(),
     });
 
-    // A worker commits its handoff and only then exits, so a kill or a timeout
-    // can land in the gap between the two. This marks off what the thread
-    // already held, so a dispatch that did answer is not recorded as a failure
-    // on top of the episode it just wrote.
-    let handoff_watermark = read_handoff_watermark(runtime, &session_id, &thread_name).await;
+    let admission = {
+        let path = runtime.store_path.clone();
+        let session = session_id.clone();
+        let thread = thread_name.clone();
+        let dispatch = dispatch_id.clone();
+        let action = action.clone();
+        let run_id = runtime.active_threads.run_id();
+        let cancellation = cancellation.clone();
+        tokio::task::spawn_blocking(move || {
+            cancellation
+                .run_if_active(|| {
+                    store::admit_worker_dispatch(
+                        &path,
+                        &session,
+                        &thread,
+                        &dispatch,
+                        run_id.as_deref(),
+                        &action,
+                    )
+                })
+                .ok_or_else(|| anyhow::anyhow!("dispatch cancelled before host admission"))?
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result)
+    };
+    let identity = match admission {
+        Ok(identity) => identity,
+        Err(error) => {
+            close_thread_dispatch(runtime, &session_id, &thread_name, &dispatch_id);
+            if cancellation.is_cancelled() {
+                return ToolResult { content: format!("{TOOL_CALL_CANCELLED_MARKER} Thread '{thread_name}' was cancelled before host admission.").into(), is_error: true };
+            }
+            let message = format!("Failed to admit worker dispatch: {error}");
+            runtime.event_sink.emit(AgentEvent::Error {
+                thread_name: Some(thread_name.clone()),
+                message: message.clone(),
+            });
+            runtime.event_sink.emit(AgentEvent::ThreadFinished {
+                name: thread_name,
+                exit_code: SPAWN_FAILURE_EXIT_CODE,
+                timed_out: false,
+                timeout_reason: None,
+                usage: None,
+            });
+            return ToolResult {
+                content: message.into(),
+                is_error: true,
+            };
+        }
+    };
 
     let result = run_worker(
         runtime,
@@ -276,9 +324,8 @@ pub async fn execute_parsed_dispatch(
             let message = format!("Failed to spawn thread '{thread_name}': {error}");
             record_dispatch_failure(
                 runtime,
-                &session_id,
                 &thread_name,
-                &action,
+                &identity,
                 store::EpisodeStatus::Error,
                 &message,
             )
@@ -302,14 +349,40 @@ pub async fn execute_parsed_dispatch(
         }
     };
 
-    let failure = classify_dispatch_failure(&run, &thread_name, timeout_secs);
+    let mut failure = classify_dispatch_failure(&run, &thread_name, timeout_secs);
+    let receipt = {
+        let path = runtime.store_path.clone();
+        let dispatch = dispatch_id.clone();
+        tokio::task::spawn_blocking(move || store::worker_dispatch_result(&path, &dispatch))
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+    };
+    let committed_response = match receipt {
+        Ok(response) => response,
+        Err(error) => {
+            if failure.is_none() {
+                failure = Some(DispatchFailure {
+                    status: store::EpisodeStatus::Error,
+                    message: format!("Failed to read host completion receipt: {error}"),
+                });
+            }
+            None
+        }
+    };
+    let committed = committed_response.is_some();
+    if failure.is_none() && !committed {
+        failure = Some(DispatchFailure {
+            status: store::EpisodeStatus::Error,
+            message: "Worker exited without a host-committed completion acknowledgement.".into(),
+        });
+    }
     if let Some(failure) = &failure {
-        if !handed_off(runtime, &session_id, &thread_name, handoff_watermark).await {
+        if !committed {
             record_dispatch_failure(
                 runtime,
-                &session_id,
                 &thread_name,
-                &action,
+                &identity,
                 failure.status,
                 &failure.message,
             )
@@ -334,7 +407,7 @@ pub async fn execute_parsed_dispatch(
             usage: run.usage,
         });
         return ToolResult {
-            content: (run.stdout.trim().to_string()).into(),
+            content: committed_response.unwrap_or_default().into(),
             is_error: false,
         };
     };
@@ -421,74 +494,23 @@ fn classify_dispatch_failure(
     None
 }
 
-/// Episodes this thread held before the dispatch started, or `None` when the
-/// read failed. Without it a killed dispatch is recorded as a failure whether
-/// or not it handed off, which is what happened before the watermark existed.
-async fn read_handoff_watermark(
-    runtime: &ToolRuntime,
-    session_id: &str,
-    thread_name: &str,
-) -> Option<i64> {
-    let store_path = runtime.store_path.clone();
-    let session_id = session_id.to_string();
-    let thread = thread_name.to_string();
-    tokio::task::spawn_blocking(move || store::latest_episode_id(&store_path, &session_id, &thread))
-        .await
-        .ok()?
-        .ok()
-}
-
-/// Whether the dispatch that just ended left a retained episode behind.
-async fn handed_off(
-    runtime: &ToolRuntime,
-    session_id: &str,
-    thread_name: &str,
-    watermark: Option<i64>,
-) -> bool {
-    let Some(watermark) = watermark else {
-        return false;
-    };
-    let store_path = runtime.store_path.clone();
-    let session_id = session_id.to_string();
-    let thread = thread_name.to_string();
-    tokio::task::spawn_blocking(move || {
-        store::has_retained_episode_after(&store_path, &session_id, &thread, watermark)
-    })
-    .await
-    .is_ok_and(|retained| retained.unwrap_or(false))
-}
-
-/// Record a dispatch that produced no handoff. A worker only writes its own
-/// episode after the model answers, so every other ending — spawn failure,
-/// cancellation, timeout, non-zero exit — would otherwise leave nothing behind
-/// saying what the thread had been asked to do.
-///
-/// Written before the dispatch is closed, and therefore before `ThreadFinished`
-/// or `RunCancelled`: those are what make the panel reload episodes, and a stop
-/// waits for the dispatch to close before aborting the run task that this write
-/// runs in.
+/// Persist a terminal failure for the admitted identity before lifecycle events.
+/// A committed result wins even when acknowledgement or worker exit is lost.
 async fn record_dispatch_failure(
     runtime: &ToolRuntime,
-    session_id: &str,
     thread_name: &str,
-    action: &str,
+    identity: &store::WorkerDispatchIdentity,
     status: store::EpisodeStatus,
     content: &str,
 ) {
     let store_path = runtime.store_path.clone();
-    let session_id = session_id.to_string();
-    let thread = thread_name.to_string();
-    let action = action.to_string();
+    let identity = identity.clone();
     let content = content.to_string();
     let write = tokio::task::spawn_blocking(move || {
-        store::append_episode_with_status(
-            &store_path,
-            &session_id,
-            &thread,
-            &action,
-            &content,
-            status,
-        )
+        if store::worker_dispatch_committed(&store_path, &identity.dispatch_id)? {
+            return Ok(());
+        }
+        store::commit_worker_episode(&store_path, &identity, &content, status).map(|_| ())
     })
     .await;
 
@@ -1009,6 +1031,9 @@ mod tests {
         runtime.workspace_cwd = root.clone();
         runtime.config_cwd = root.clone();
         runtime.worker_executable = Some(executable);
+        runtime.store_path = root.join("store.db");
+        store::initialize(&runtime.store_path).unwrap();
+        store::insert_test_session(&runtime.store_path, "test-session");
         let params = ParsedDispatchParams {
             thread_name: "worker".to_string(),
             dispatch_id: "dispatch".to_string(),

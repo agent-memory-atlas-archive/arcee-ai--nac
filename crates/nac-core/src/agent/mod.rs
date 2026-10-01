@@ -21,6 +21,7 @@ mod failed_tool_round;
 pub(crate) mod preview;
 mod prompt_rendering;
 mod tool_exec;
+mod transcript_commit;
 mod transcript_state;
 mod web_capabilities;
 
@@ -169,6 +170,11 @@ pub struct Agent {
     /// delete them from stale in-memory boundaries (shared-store recovery,
     /// issue #146).
     committed_log_len: u64,
+    /// Non-authoritative bound for a submitted append. Cancellation resolves
+    /// it against durable state after the writer has finished.
+    pending_log_end: Option<u64>,
+    /// Exact submitted message retained until an uncertain commit is replayed.
+    unacknowledged_log_message: Option<(u64, Message)>,
     /// Start index of a direct-inbox append whose blocking transaction has
     /// been submitted but whose canonical User rows have not yet been adopted
     /// into `messages`. Tokio task abort cannot cancel that transaction, so
@@ -423,6 +429,8 @@ impl Agent {
             appended_steering_ids: HashSet::new(),
             transcript_log,
             committed_log_len,
+            pending_log_end: None,
+            unacknowledged_log_message: None,
             direct_inbox_append_start: None,
             steering_append_pending: false,
             transcript_recovery_warning: None,
@@ -1080,6 +1088,8 @@ impl Agent {
         // The restored transcript claims the durable state through its
         // length: every log row below it was adopted by this process.
         self.committed_log_len = messages.len() as u64;
+        self.pending_log_end = None;
+        self.unacknowledged_log_message = None;
         self.messages = messages;
         if let Some(compaction) = &mut self.compaction {
             compaction.reset_for_transcript_replacement();
@@ -1384,7 +1394,10 @@ impl Agent {
         let Some(sink) = &self.transcript_log else {
             return Ok(false);
         };
-        let from_idx = self.committed_log_len;
+        let from_idx = self
+            .pending_log_end
+            .unwrap_or(self.committed_log_len)
+            .max(self.committed_log_len);
         let writer = Arc::clone(&sink.writer);
         let session_id = sink.session_id.clone();
         let tail = tokio::task::spawn_blocking(move || writer.read_from(&session_id, from_idx))
@@ -1427,6 +1440,10 @@ impl Agent {
         }
         self.committed_log_len = merged.len() as u64;
         self.restore_messages(merged);
+        // Failed reads or validation must leave recovery tokens available
+        // for another reload rather than letting cleanup delete unseen rows.
+        self.direct_inbox_append_start = None;
+        self.steering_append_pending = false;
         Ok(())
     }
 
@@ -1445,19 +1462,17 @@ impl Agent {
     /// once started, so the log can hold a straggler row at `messages.len()`
     /// that the vec never saw — without the delete, the next append would
     /// reuse that idx and leave duplicate-idx rows for the restore merge.
-    /// The straggler stays within this process's own commits because
-    /// appends claim their rows in `committed_log_len` at submission time
-    /// (before the `spawn_blocking` await), so the delete stays below that
-    /// boundary.
+    /// A submitted append has a separate, non-authoritative pending bound.
+    /// The writer finishes before the durable read resolves that bound;
+    /// `committed_log_len` advances only after commit acknowledgement.
     /// Durable rows BEYOND it belong to a peer (shared store, issue #146):
     /// the in-memory transcript is stale, so the durable state is adopted
     /// instead of deleting the peer's committed rows from the stale length.
     /// Both terminal paths treat a normalization error as best-effort: the
     /// next restore re-normalizes the stale tail.
     pub async fn normalize_dangling_tail(&mut self) -> Result<()> {
-        if self.direct_inbox_append_start.take().is_some()
-            || std::mem::take(&mut self.steering_append_pending)
-        {
+        self.reconcile_unacknowledged_message().await?;
+        if self.direct_inbox_append_start.is_some() || self.steering_append_pending {
             return self.reload_transcript_from_store().await;
         }
         if self.durable_log_has_rows_past_own_commits().await? {
@@ -1486,9 +1501,8 @@ impl Agent {
     /// path so the chat can retain dispatched thread cards and their persisted
     /// logs while the resulting transcript remains valid provider history.
     pub async fn append_cancellation_marker_preserving_tools(&mut self) -> Result<()> {
-        if self.direct_inbox_append_start.take().is_some()
-            || std::mem::take(&mut self.steering_append_pending)
-        {
+        self.reconcile_unacknowledged_message().await?;
+        if self.direct_inbox_append_start.is_some() || self.steering_append_pending {
             // A direct steer delivery transaction may have committed after
             // the run task was aborted. Its User row and delivered inbox state
             // are one durable fact; adopt the row before adding cancellation.
@@ -1530,7 +1544,7 @@ impl Agent {
         } else {
             Some(format!("{}\n\n{}", partial.text, RUN_FAILED_PARTIAL_MARKER))
         };
-        self.push_and_log(Message::Assistant {
+        self.push_terminal_batch_and_log(vec![Message::Assistant {
             content,
             reasoning_text: (!partial.reasoning.is_empty()).then_some(partial.reasoning),
             reasoning_details: None,
@@ -1538,7 +1552,7 @@ impl Agent {
             duration_ms: None,
             model_origin: Some(self.client.model_origin()),
             reasoning_field: None,
-        })
+        }])
         .await
     }
 
@@ -1564,7 +1578,7 @@ impl Agent {
             model_origin: None,
             reasoning_field: None,
         });
-        self.push_batch_and_log(messages).await
+        self.push_terminal_batch_and_log(messages).await
     }
 
     fn clear_partial_stream(&self) {
@@ -1583,192 +1597,6 @@ impl Agent {
         )
     }
 
-    /// Append `messages` to the transcript log at absolute positions
-    /// `start_idx..` via `spawn_blocking` (steering-claim precedent). A no-op
-    /// for agents without a transcript log (workers, picker sessions).
-    async fn log_transcript_batch(&mut self, start_idx: u64, messages: &[Message]) -> Result<()> {
-        let Some(sink) = &self.transcript_log else {
-            return Ok(());
-        };
-        if messages.is_empty() {
-            return Ok(());
-        }
-        let writer = Arc::clone(&sink.writer);
-        let session_id = sink.session_id.clone();
-        let messages = messages.to_vec();
-        let batch_len = messages.len() as u64;
-        // Claim the rows at submission, before the await: a run task
-        // dropped while the blocking append is in flight cannot interrupt
-        // it, so the append still completes without this function ever
-        // resuming. The up-front claim keeps that straggler row within this
-        // process's own commits, so terminal normalization trims it instead
-        // of mistaking it for a peer's committed row (issue #146).
-        let pre_submission_committed = self.committed_log_len;
-        self.committed_log_len = self.committed_log_len.max(start_idx + batch_len);
-        let appended = tokio::task::spawn_blocking(move || {
-            writer.append_batch(&session_id, start_idx, &messages)
-        })
-        .await
-        .map_err(|error| anyhow!("transcript log append task failed: {error}"))?;
-        match appended {
-            Ok(()) => {
-                // Live trigger (step 3): emitted after the log commit,
-                // before the vec push — the store-backed read path sees the
-                // rows immediately.
-                self.event_sink
-                    .emit_transcript_appended(start_idx + batch_len);
-                Ok(())
-            }
-            Err(error) => {
-                // The batch commits in one transaction, so a failed append
-                // left no rows behind: release the optimistic claim to keep
-                // the own-commits bound exact. A dropped task never reaches
-                // this rollback — which is exactly the straggler case the
-                // claim exists for.
-                self.committed_log_len = pre_submission_committed;
-                Err(error)
-            }
-        }
-    }
-
-    /// Append one message to the transcript log at absolute position `idx`
-    /// via `spawn_blocking`. A no-op for agents without a transcript log.
-    async fn log_transcript_message(&mut self, idx: u64, message: &Message) -> Result<()> {
-        let Some(sink) = &self.transcript_log else {
-            return Ok(());
-        };
-        let writer = Arc::clone(&sink.writer);
-        let session_id = sink.session_id.clone();
-        let message = message.clone();
-        // Claim the row at submission, before the await — see
-        // log_transcript_batch for why the straggler from a dropped run
-        // task must stay within this process's own commits.
-        let pre_submission_committed = self.committed_log_len;
-        self.committed_log_len = self.committed_log_len.max(idx + 1);
-        let appended =
-            tokio::task::spawn_blocking(move || writer.append(&session_id, idx, &message))
-                .await
-                .map_err(|error| anyhow!("transcript log append task failed: {error}"))?;
-        match appended {
-            Ok(()) => {
-                // Live trigger (step 3): see log_transcript_batch.
-                self.event_sink.emit_transcript_appended(idx + 1);
-                Ok(())
-            }
-            Err(error) => {
-                // Nothing was committed: release the optimistic claim.
-                self.committed_log_len = pre_submission_committed;
-                Err(error)
-            }
-        }
-    }
-
-    /// Push one message into the transcript, appending it to the log first
-    /// (log-first: the vec never holds an undurable message). `idx` is the
-    /// absolute Vec index — `messages.len()` before the push.
-    async fn push_and_log(&mut self, message: Message) -> Result<()> {
-        let idx = self.messages.len() as u64;
-        self.log_transcript_message(idx, &message).await?;
-        self.messages.push(message);
-        Ok(())
-    }
-    async fn push_and_log_run_prompt(
-        &mut self,
-        message: Message,
-        run_id: &SessionRunId,
-        inbox_item_id: Option<i64>,
-    ) -> Result<()> {
-        let idx = self.messages.len() as u64;
-        if let Some(sink) = &self.transcript_log {
-            let writer = Arc::clone(&sink.writer);
-            let session_id = sink.session_id.clone();
-            let stored_message = message.clone();
-            let run_id = run_id.to_string();
-            tokio::task::spawn_blocking(move || match inbox_item_id {
-                Some(inbox_item_id) => writer.append_inbox_run_prompt(
-                    &session_id,
-                    idx,
-                    &stored_message,
-                    &run_id,
-                    inbox_item_id,
-                ),
-                None => writer.append_run_prompt(&session_id, idx, &stored_message, &run_id),
-            })
-            .await
-            .map_err(|error| anyhow!("run prompt append task failed: {error}"))??;
-            self.event_sink.emit_transcript_appended(idx + 1);
-        }
-        self.messages.push(message);
-        Ok(())
-    }
-
-    /// Push a batch into the transcript atomically: the whole batch is
-    /// logged in one transaction before any of it enters the vec.
-    async fn push_batch_and_log(&mut self, messages: Vec<Message>) -> Result<()> {
-        let start_idx = self.messages.len() as u64;
-        self.log_transcript_batch(start_idx, &messages).await?;
-        self.messages.extend(messages);
-        Ok(())
-    }
-
-    /// Commit a proposed steering tail and its delivery statuses in one SQLite
-    /// transaction. The in-memory vector is adopted only after this returns,
-    /// preserving the log-first invariant even if the run is cancelled while
-    /// the blocking transaction is pending.
-    async fn commit_staged_steering(
-        &mut self,
-        from_idx: usize,
-        steering_ids: &[i64],
-        staged: &[Message],
-        session_id: &str,
-        dispatch_id: &str,
-    ) -> Result<()> {
-        let Some(sink) = &self.transcript_log else {
-            return crate::store::acknowledge_thread_steering_batch(
-                &self.tool_runtime.store_path,
-                steering_ids,
-                session_id,
-                dispatch_id,
-            );
-        };
-        if staged.is_empty() {
-            return Ok(());
-        }
-        let writer = Arc::clone(&sink.writer);
-        let sink_session_id = sink.session_id.clone();
-        let dispatch_id = dispatch_id.to_string();
-        let steering_ids = steering_ids.to_vec();
-        let batch_len = staged.len() as u64;
-        let pre_submission_committed = self.committed_log_len;
-        self.committed_log_len = self.committed_log_len.max(from_idx as u64 + batch_len);
-        let staged = staged.to_vec();
-        self.steering_append_pending = true;
-        let joined = tokio::task::spawn_blocking(move || {
-            writer.append_claimed_thread_steering(
-                &sink_session_id,
-                &dispatch_id,
-                &steering_ids,
-                from_idx as u64,
-                &staged,
-            )
-        })
-        .await;
-        self.steering_append_pending = false;
-        let committed =
-            joined.map_err(|error| anyhow!("steering transcript commit task failed: {error}"))?;
-        match committed {
-            Ok(()) => {
-                self.event_sink
-                    .emit_transcript_appended(from_idx as u64 + batch_len);
-                Ok(())
-            }
-            Err(error) => {
-                self.committed_log_len = pre_submission_committed;
-                Err(error)
-            }
-        }
-    }
-
     /// Delete log rows with `idx >= from_idx` (crash/cancel normalization).
     async fn delete_log_tail(&mut self, from_idx: u64) -> Result<()> {
         let Some(sink) = &self.transcript_log else {
@@ -1780,6 +1608,7 @@ impl Agent {
             .await
             .map_err(|error| anyhow!("transcript log tail delete task failed: {error}"))??;
         self.committed_log_len = self.committed_log_len.min(from_idx);
+        self.pending_log_end = None;
         Ok(())
     }
 
@@ -1886,52 +1715,6 @@ impl Agent {
                 Err(error)
             }
         }
-    }
-
-    async fn append_pending_direct_inbox(&mut self) -> Result<usize> {
-        let Some(sink) = &self.transcript_log else {
-            return Ok(0);
-        };
-        let run_id = self
-            .steering_dispatch_id
-            .clone()
-            .ok_or_else(|| anyhow!("direct inbox delivery requires an active run id"))?;
-        let writer = Arc::clone(&sink.writer);
-        let session_id = sink.session_id.clone();
-        let start_idx = self.messages.len() as u64;
-        let pre_submission_committed = self.committed_log_len;
-        // Claim the possible append before spawn_blocking for the same reason
-        // as ordinary transcript appends: cancellation must recognize a row
-        // that commits after the async task is aborted as this process's row.
-        self.committed_log_len = self.committed_log_len.max(start_idx + 1);
-        self.direct_inbox_append_start = Some(start_idx);
-        let records = tokio::task::spawn_blocking(move || {
-            writer.append_pending_inbox_steers(&session_id, &run_id, start_idx)
-        })
-        .await
-        .map_err(|error| anyhow!("direct inbox append task failed: {error}"))?;
-        let records = match records {
-            Ok(records) => records,
-            Err(error) => {
-                self.direct_inbox_append_start = None;
-                self.committed_log_len = pre_submission_committed;
-                return Err(error);
-            }
-        };
-        if records.is_empty() {
-            self.direct_inbox_append_start = None;
-            self.committed_log_len = pre_submission_committed;
-            return Ok(0);
-        }
-        self.messages
-            .extend(records.iter().map(|record| Message::User {
-                content: record.content.clone(),
-            }));
-        self.committed_log_len = self.messages.len() as u64;
-        self.direct_inbox_append_start = None;
-        self.event_sink
-            .emit_transcript_appended(self.messages.len() as u64);
-        Ok(records.len())
     }
 
     async fn append_pending_guidance_checked(&mut self) -> Result<usize> {

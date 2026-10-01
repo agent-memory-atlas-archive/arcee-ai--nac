@@ -24,8 +24,15 @@ mod threads;
 mod time;
 mod traditional_children;
 mod transcript;
+mod transcript_append;
+use transcript_append::AppendPurpose;
+mod worker_dispatches;
 mod worksets;
 mod workspace_revisions;
+pub(crate) use worker_dispatches::{
+    admit_worker_dispatch, commit_worker_episode, worker_dispatch_committed,
+    worker_dispatch_generation, worker_dispatch_result, WorkerDispatchIdentity,
+};
 
 pub use managed_maintenance::*;
 pub use managed_orchestrators::*;
@@ -60,6 +67,7 @@ pub use thread_events::*;
 pub use threads::*;
 pub use traditional_children::*;
 pub use transcript::*;
+pub use transcript_append::{TranscriptAppendError, TranscriptAppendReceipt};
 pub use worksets::*;
 pub use workspace_revisions::*;
 

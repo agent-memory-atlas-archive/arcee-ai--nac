@@ -324,7 +324,6 @@ pub async fn build_managed_worker_config(
         &workspace_cwd
     };
     let store_path = resolve_store_path(store_base_cwd, options.store, config);
-    store::initialize(&store_path)?;
     let sandbox = if ssh_host.is_some() {
         None
     } else {
@@ -406,7 +405,7 @@ pub async fn build_managed_worker_config(
             initial_messages,
             thread_name: Some(options.dispatch.thread_name.clone()),
             dispatch_id: Some(options.dispatch.dispatch_id.clone()),
-            event_sink: EventSink::stderr_prefixed(),
+            event_sink: EventSink::worker_stderr_prefixed(),
             workspace_cwd,
             config_cwd,
             working_directory,
@@ -425,7 +424,7 @@ pub async fn build_managed_worker_config(
 
     Ok(ManagedWorkerRunConfig {
         agent,
-        store_path,
+        dispatch_id: options.dispatch.dispatch_id,
         session_id: options.dispatch.session_id,
         thread_name: options.dispatch.thread_name,
         action: options.dispatch.action,

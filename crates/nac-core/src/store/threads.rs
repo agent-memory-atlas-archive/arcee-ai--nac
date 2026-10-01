@@ -65,7 +65,7 @@ pub fn load_worker_context(
     thread_name: &str,
     source_threads: &[String],
 ) -> Result<WorkerContext> {
-    let conn = open_runtime_connection(path)?;
+    let conn = open_initialized_read_connection(path)?;
     let self_episodes = load_thread_episodes(&conn, session_id, thread_name)?;
     let mut source_episodes = Vec::with_capacity(source_threads.len());
 
@@ -279,7 +279,11 @@ pub fn delete_thread(path: &Path, session_id: &str, thread_name: &str) -> Result
     Ok(deleted > 0)
 }
 
-fn ensure_thread_in_tx(tx: &Transaction<'_>, session_id: &str, thread_name: &str) -> Result<()> {
+pub(super) fn ensure_thread_in_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    thread_name: &str,
+) -> Result<()> {
     let now = now_utc();
     tx.execute(
         "INSERT OR IGNORE INTO threads (name, session_id, created_at, updated_at)

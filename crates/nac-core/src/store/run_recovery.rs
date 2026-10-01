@@ -319,6 +319,7 @@ fn reconcile_active_run_inner(path: &Path, session_id: &str) -> Result<ActiveRun
     let mut connection = open_runtime_connection(path)?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    super::worker_dispatches::recover_worker_dispatches(&transaction, session_id)?;
     let Some(record) = load_run_recovery_with_connection(&transaction, session_id)? else {
         transaction.commit()?;
         return Ok(ActiveRunReconciliation::None);
@@ -614,20 +615,27 @@ mod tests {
             return;
         };
         let ready_path = PathBuf::from(std::env::var_os("NAC_TEST_RUN_RECOVERY_READY").unwrap());
-        let _operation_lease = crate::sessions::SessionOperationLease::try_acquire(
+        let operation_lease = std::sync::Arc::new(
+            crate::sessions::SessionOperationLease::try_acquire(
+                Path::new(&store_path),
+                "session-a",
+            )
+            .unwrap(),
+        );
+        TranscriptLogWriter::for_run(
             Path::new(&store_path),
             "session-a",
+            "run-killed",
+            &operation_lease,
+        )
+        .unwrap()
+        .append_run_prompt(
+            "session-a",
+            0,
+            &user("committed before SIGKILL"),
+            "run-killed",
         )
         .unwrap();
-        TranscriptLogWriter::new(Path::new(&store_path))
-            .unwrap()
-            .append_run_prompt(
-                "session-a",
-                0,
-                &user("committed before SIGKILL"),
-                "run-killed",
-            )
-            .unwrap();
         std::fs::write(ready_path, b"ready").unwrap();
         std::thread::sleep(std::time::Duration::from_secs(30));
     }

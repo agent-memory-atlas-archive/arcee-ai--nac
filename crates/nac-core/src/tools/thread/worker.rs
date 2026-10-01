@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::Command;
 use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, timeout};
@@ -316,7 +316,7 @@ pub(super) async fn run_worker(
         child.id(),
         crate::telemetry::Correlation::session(Some(invocation.session_id)),
     );
-    let mut control_stdin = child.stdin.take();
+    let control_stdin = Arc::new(Mutex::new(child.stdin.take()));
     let credential_sender = match credential_channel {
         Some(channel) => Some(channel.into_sender(child.id())?),
         None => None,
@@ -332,6 +332,7 @@ pub(super) async fn run_worker(
     let timeout_trace_for_logs = Arc::clone(&timeout_trace);
     let stderr_credential_redactions = native_credential_redactions.clone();
     let (cancel_ack_tx, mut cancel_ack_rx) = watch::channel(false);
+    let (commit_ack_tx, commit_ack_rx) = watch::channel(false);
     let reader_shutdown = ThreadCancellation::default();
     let stderr_cancellation = cancellation.clone();
     let stderr_shutdown = reader_shutdown.clone();
@@ -341,6 +342,7 @@ pub(super) async fn run_worker(
         let mut output = String::new();
         let mut worker_usage = TokenUsage::default();
         let mut model_error = None;
+        let mut deferred_finish = None;
         loop {
             let line = tokio::select! {
                 _ = stderr_shutdown.cancelled() => break,
@@ -350,12 +352,12 @@ pub(super) async fn run_worker(
                 break;
             };
             let line = redact_worker_native_credentials(&line, &stderr_credential_redactions);
-            if stderr_cancellation.is_cancelled() {
-                break;
-            }
             if line == crate::worker::MANAGED_WORKER_CANCEL_ACK {
                 let _ = cancel_ack_tx.send(true);
                 continue;
+            }
+            if stderr_cancellation.is_cancelled() {
+                break;
             }
             if is_worker_telemetry_line(&line) {
                 eprintln!("{line}");
@@ -378,7 +380,11 @@ pub(super) async fn run_worker(
                         }
                     }
                 }
-                event_sink.emit(event);
+                if matches!(event, AgentEvent::RunFinished { .. }) {
+                    deferred_finish = Some(event);
+                } else {
+                    event_sink.emit(event);
+                }
             } else {
                 event_sink.emit(AgentEvent::ThreadLog {
                     name: thread_name_for_logs.clone(),
@@ -399,43 +405,97 @@ pub(super) async fn run_worker(
         } else {
             Some(worker_usage)
         };
-        (output, usage, model_error)
+        (output, usage, model_error, deferred_finish)
     });
 
     let stdout_cancellation = cancellation.clone();
     let stdout_shutdown = reader_shutdown.clone();
     let stdout_credential_redactions = native_credential_redactions;
+    let completion_identity = crate::store::WorkerDispatchIdentity {
+        session_id: invocation.session_id.to_string(),
+        thread_name: invocation.thread_name.to_string(),
+        dispatch_id: invocation.dispatch_id.to_string(),
+        // Read the admission made by execute_parsed_dispatch. Raw process
+        // supervision tests need no durable admission unless they send a frame.
+        generation: 0,
+        run_id: runtime.active_threads.run_id(),
+    };
+    let store_path = runtime.store_path.clone();
+    let completion_stdin = Arc::clone(&control_stdin);
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| std::io::Error::other("supervised worker stdout pipe is unavailable"))?;
+    let protocol_failure = ThreadCancellation::default();
+    let stdout_protocol_failure = protocol_failure.clone();
     let stdout_handle = tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
+        let mut reader = BufReader::new(stdout);
         let mut output = String::new();
+        let mut protocol_error = None;
         loop {
-            let line = tokio::select! {
+            let mut bytes = Vec::new();
+            let mut bounded =
+                (&mut reader).take(crate::worker_protocol::MAX_COMPLETION_BYTES as u64 + 1);
+            let read = tokio::select! {
                 _ = stdout_shutdown.cancelled() => break,
-                line = next_pipe_line(&mut lines) => line,
+                read = bounded.read_until(b'\n', &mut bytes) => read,
             };
-            let Some(line) = line else {
+            match read {
+                Ok(0) => break,
+                Ok(_) if bytes.len() <= crate::worker_protocol::MAX_COMPLETION_BYTES => {}
+                _ => {
+                    protocol_error = Some("invalid or oversized worker output frame".to_string());
+                    break;
+                }
+            }
+            let Ok(line) = String::from_utf8(bytes) else {
+                protocol_error = Some("invalid UTF-8 worker output frame".to_string());
                 break;
             };
-            let line = redact_worker_native_credentials(&line, &stdout_credential_redactions);
             if stdout_cancellation.is_cancelled() {
                 break;
             }
-            if !output.is_empty() {
-                output.push('\n');
+            if let Some(payload) = line
+                .trim_end()
+                .strip_prefix(crate::worker_protocol::COMPLETION_PREFIX)
+            {
+                let result = commit_completion_frame(
+                    &store_path,
+                    &completion_identity,
+                    payload,
+                    &stdout_credential_redactions,
+                    &stdout_cancellation,
+                    &completion_stdin,
+                )
+                .await;
+                if let Err(error) = result {
+                    protocol_error = Some(format!("worker completion rejected: {error}"));
+                    // EOF releases a worker waiting for an acknowledgement.
+                    completion_stdin.lock().await.take();
+                    break;
+                }
+                let _ = commit_ack_tx.send(true);
+            } else {
+                let line = redact_worker_native_credentials(
+                    line.trim_end(),
+                    &stdout_credential_redactions,
+                );
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&line);
             }
-            output.push_str(&line);
         }
-        output
+        if protocol_error.is_some() {
+            stdout_protocol_failure.cancel();
+        }
+        (output, protocol_error)
     });
 
     enum WaitOutcome {
         Exited(std::io::Result<std::process::ExitStatus>),
         TimedOut,
+        ProtocolError,
         Cancelled,
         CredentialError(std::io::Error),
     }
@@ -452,12 +512,14 @@ pub(super) async fn run_worker(
     let mut outcome = tokio::select! {
         biased;
         _ = cancellation.cancelled() => WaitOutcome::Cancelled,
+        _ = protocol_failure.cancelled() => WaitOutcome::ProtocolError,
         result = child.wait() => WaitOutcome::Exited(result),
         _ = &mut deadline => WaitOutcome::TimedOut,
         result = &mut credential_delivery => match result {
             Ok(()) => tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => WaitOutcome::Cancelled,
+                _ = protocol_failure.cancelled() => WaitOutcome::ProtocolError,
                 result = child.wait() => WaitOutcome::Exited(result),
                 _ = &mut deadline => WaitOutcome::TimedOut,
             },
@@ -469,7 +531,7 @@ pub(super) async fn run_worker(
     };
     let mut cooperatively_cancelled = false;
     if matches!(outcome, WaitOutcome::Cancelled) {
-        if let Some(mut stdin) = control_stdin.take() {
+        if let Some(stdin) = control_stdin.lock().await.as_mut() {
             let _ = stdin.write_all(b"cancel\n").await;
             let _ = stdin.flush().await;
         }
@@ -499,11 +561,17 @@ pub(super) async fn run_worker(
     }
 
     let timed_out = matches!(outcome, WaitOutcome::TimedOut);
+    if timed_out || matches!(outcome, WaitOutcome::ProtocolError) {
+        cancellation.cancel();
+    }
     let mut cancelled = matches!(outcome, WaitOutcome::Cancelled);
     let mut cleanup_error = None;
     let mut force_reader_shutdown = false;
     if timed_out
-        || matches!(outcome, WaitOutcome::CredentialError(_))
+        || matches!(
+            outcome,
+            WaitOutcome::CredentialError(_) | WaitOutcome::ProtocolError
+        )
         || (cancelled && !cooperatively_cancelled)
     {
         match process_tree.terminate(&mut child).await {
@@ -516,13 +584,19 @@ pub(super) async fn run_worker(
     }
 
     let readers = async {
-        let (stderr, worker_usage, model_error) = stderr_handle.await.unwrap_or_default();
-        let stdout = stdout_handle.await.unwrap_or_default();
-        (stderr, worker_usage, model_error, stdout)
+        let (stderr, worker_usage, model_error, deferred_finish) =
+            stderr_handle.await.unwrap_or_default();
+        let (stdout, protocol_error) = stdout_handle.await.unwrap_or_default();
+        if *commit_ack_rx.borrow() {
+            if let Some(event) = deferred_finish {
+                runtime.event_sink.emit(event);
+            }
+        }
+        (stderr, worker_usage, protocol_error.or(model_error), stdout)
     };
     tokio::pin!(readers);
     let mut reader_output = None;
-    if !timed_out && !cancelled {
+    if !timed_out && !cancelled && !matches!(outcome, WaitOutcome::ProtocolError) {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
@@ -560,11 +634,22 @@ pub(super) async fn run_worker(
     } else {
         None
     };
-    let exit_code = match outcome {
+    let mut exit_code = match outcome {
         WaitOutcome::Exited(wait_result) if !cancelled => wait_result?.code().unwrap_or(-1),
-        WaitOutcome::Exited(_) | WaitOutcome::TimedOut | WaitOutcome::Cancelled => -1,
+        WaitOutcome::Exited(_)
+        | WaitOutcome::TimedOut
+        | WaitOutcome::Cancelled
+        | WaitOutcome::ProtocolError => -1,
         WaitOutcome::CredentialError(error) => return Err(error),
     };
+
+    if model_error.as_ref().is_some_and(|error| {
+        error.starts_with("worker completion rejected:")
+            || error.starts_with("invalid or oversized")
+            || error.starts_with("invalid UTF-8 worker")
+    }) {
+        exit_code = -1;
+    }
 
     Ok(WorkerRun {
         stdout,
@@ -577,6 +662,68 @@ pub(super) async fn run_worker(
         model_error,
         cleanup_error,
     })
+}
+
+async fn commit_completion_frame(
+    path: &std::path::Path,
+    expected: &crate::store::WorkerDispatchIdentity,
+    payload: &str,
+    redactions: &[String],
+    cancellation: &ThreadCancellation,
+    stdin: &Arc<Mutex<Option<tokio::process::ChildStdin>>>,
+) -> anyhow::Result<()> {
+    use crate::worker_protocol::{CommitAck, Completion, ACK_PREFIX};
+    let mut frame: Completion = serde_json::from_str(payload)?;
+    anyhow::ensure!(
+        frame.session_id == expected.session_id
+            && frame.thread_name == expected.thread_name
+            && frame.dispatch_id == expected.dispatch_id,
+        "completion identity mismatch"
+    );
+    frame.content = redact_worker_native_credentials(&frame.content, redactions);
+    let path = path.to_path_buf();
+    let mut identity = expected.clone();
+    let content = frame.content;
+    let commit_cancellation = cancellation.clone();
+    let episode_id = tokio::task::spawn_blocking(move || {
+        identity.generation =
+            crate::store::worker_dispatch_generation(&path, &identity.dispatch_id)?;
+        commit_cancellation
+            .run_if_active(|| {
+                crate::store::commit_worker_episode(
+                    &path,
+                    &identity,
+                    &content,
+                    crate::store::EpisodeStatus::Ok,
+                )
+            })
+            .ok_or_else(|| anyhow::anyhow!("dispatch cancelled before host commit"))?
+    })
+    .await??;
+    let ack = CommitAck {
+        session_id: expected.session_id.clone(),
+        thread_name: expected.thread_name.clone(),
+        dispatch_id: expected.dispatch_id.clone(),
+        episode_id,
+    };
+    let encoded = format!("{ACK_PREFIX}{}\n", serde_json::to_string(&ack)?);
+    let mut control = stdin.lock().await;
+    let control = control
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("worker control pipe is closed"))?;
+    anyhow::ensure!(
+        encoded.len() <= crate::worker_protocol::MAX_CONTROL_BYTES,
+        "host acknowledgement exceeds protocol limit"
+    );
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => anyhow::bail!("host acknowledgement interrupted"),
+        result = async {
+            control.write_all(encoded.as_bytes()).await?;
+            control.flush().await
+        } => result?,
+    }
+    Ok(())
 }
 
 fn is_worker_telemetry_line(line: &str) -> bool {

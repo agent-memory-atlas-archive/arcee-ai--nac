@@ -664,7 +664,7 @@ struct ActiveRunState {
     transcript_baseline: Option<usize>,
     command_cancellation: crate::tools::ThreadCancellation,
     inbox_item_id: Option<i64>,
-    _operation_lease: Option<sessions::SessionOperationLease>,
+    _operation_lease: Option<Arc<sessions::SessionOperationLease>>,
     _workspace_activity_lease: Option<sessions::WorkspaceActivityLease>,
 }
 

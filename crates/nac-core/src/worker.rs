@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::io::BufRead;
-use std::path::PathBuf;
 
 use crate::tools::ThreadCancellation;
 use anyhow::Result;
@@ -15,10 +14,10 @@ pub(crate) const MANAGED_WORKER_CANCEL_ACK: &str = "__NAC_CANCEL_ACK__";
 
 pub struct ManagedWorkerRunConfig {
     pub(crate) agent: Agent,
-    pub(crate) store_path: PathBuf,
     pub(crate) session_id: String,
     pub(crate) thread_name: String,
     pub(crate) action: String,
+    pub(crate) dispatch_id: String,
 }
 
 impl ManagedWorkerRunConfig {
@@ -84,40 +83,49 @@ pub fn build_preloaded_skill_messages(
     Ok(messages)
 }
 
-async fn commit_managed_worker_episode(
-    store_path: PathBuf,
-    session_id: String,
-    thread_name: String,
-    action: String,
-    response: &str,
-) -> Result<()> {
-    let response = response.to_string();
-    tokio::task::spawn_blocking(move || {
-        store::append_episode(&store_path, &session_id, &thread_name, &action, &response)
-    })
-    .await??;
-    Ok(())
-}
-
 fn spawn_cancellation_listener(
     command_cancellation: ThreadCancellation,
     ready: Option<std::sync::mpsc::Sender<()>>,
+    completion: Option<(
+        crate::worker_protocol::Completion,
+        tokio::sync::oneshot::Sender<Result<()>>,
+    )>,
 ) {
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
-        let lines = stdin.lock().lines();
+        let mut input = stdin.lock();
         if let Some(ready) = ready {
             let _ = ready.send(());
         }
-        for line in lines {
-            let Ok(line) = line else {
-                break;
-            };
+        let result = (|| -> Result<()> {
+            let mut bytes = Vec::new();
+            let count = std::io::Read::take(
+                &mut input,
+                crate::worker_protocol::MAX_CONTROL_BYTES as u64 + 1,
+            )
+            .read_until(b'\n', &mut bytes)?;
+            anyhow::ensure!(
+                count > 0 && bytes.len() <= crate::worker_protocol::MAX_CONTROL_BYTES,
+                "host control pipe closed or exceeded its limit before acknowledgement"
+            );
+            let line = String::from_utf8(bytes)?;
             if line.trim() == "cancel" {
                 eprintln!("{MANAGED_WORKER_CANCEL_ACK}");
-                command_cancellation.cancel();
-                break;
+                anyhow::bail!("worker cancelled by host");
             }
+            anyhow::ensure!(
+                completion
+                    .as_ref()
+                    .is_some_and(|(expected, _)| expected.validates_ack(line.trim_end())),
+                "invalid host commit acknowledgement"
+            );
+            Ok(())
+        })();
+        if result.is_err() {
+            command_cancellation.cancel();
+        }
+        if let Some((_, sender)) = completion {
+            let _ = sender.send(result);
         }
     });
 }
@@ -130,7 +138,6 @@ pub async fn run_managed_worker(
     // before entering this function. Only now does the worker announce
     // readiness and receive the credential over its non-inherited socket.
     let credentials = credential_receiver.receive_after_mcp().await?;
-    spawn_cancellation_listener(run_config.agent.command_cancellation(), None);
     run_managed_worker_with_credentials(run_config, credentials).await
 }
 
@@ -138,20 +145,46 @@ async fn run_managed_worker_with_credentials(
     run_config: ManagedWorkerRunConfig,
     credentials: ManagedWorkerNativeCredentials,
 ) -> Result<()> {
-    let ManagedWorkerRunConfig {
-        mut agent,
-        store_path,
-        session_id,
-        thread_name,
-        action,
-    } = run_config;
-
-    agent.set_worker_web_credential(credentials.into_exa_api_key());
-    let send_result = agent.send(&action).await;
-    let response = send_result?;
-    commit_managed_worker_episode(store_path, session_id, thread_name, action, &response).await?;
-    println!("{response}");
+    let mut completion = crate::worker_protocol::Completion {
+        session_id: run_config.session_id.clone(),
+        thread_name: run_config.thread_name.clone(),
+        dispatch_id: run_config.dispatch_id.clone(),
+        content: String::new(),
+    };
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let cancellation = run_config.agent.command_cancellation();
+    spawn_cancellation_listener(
+        cancellation.clone(),
+        None,
+        Some((completion.clone(), ack_tx)),
+    );
+    let response = produce_worker_response(run_config, credentials).await?;
+    completion.content = response;
+    use std::io::Write;
+    std::io::stdout()
+        .lock()
+        .write_all(completion.encode()?.as_bytes())?;
+    std::io::stdout().lock().flush()?;
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => anyhow::bail!("worker cancelled before commit acknowledgement"),
+        ack = ack_rx => ack.map_err(|_| anyhow::anyhow!("host acknowledgement listener stopped"))??,
+    }
+    crate::events::EventSink::stderr_prefixed().emit(crate::events::AgentEvent::RunFinished {
+        thread_name: Some(completion.thread_name),
+    });
     Ok(())
+}
+
+async fn produce_worker_response(
+    run_config: ManagedWorkerRunConfig,
+    credentials: ManagedWorkerNativeCredentials,
+) -> Result<String> {
+    let ManagedWorkerRunConfig {
+        mut agent, action, ..
+    } = run_config;
+    agent.set_worker_web_credential(credentials.into_exa_api_key());
+    agent.send(&action).await
 }
 
 #[cfg(test)]
@@ -164,6 +197,7 @@ mod tests {
     use crate::skills::SkillRecord;
     use crate::tools::thread::DEFAULT_THREAD_TIMEOUT_SECS;
     use std::io::{Read, Write};
+    use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -235,13 +269,13 @@ mod tests {
                 ModelClient::new_for_test_server(server.base_url.clone()),
                 store_path.clone(),
             ),
-            store_path: store_path.clone(),
+            dispatch_id: "dispatch".to_string(),
             session_id: "session".to_string(),
             thread_name: "impl".to_string(),
             action: "answer the delegated question".to_string(),
         };
 
-        run_managed_worker_with_credentials(
+        let answer = produce_worker_response(
             run_config,
             ManagedWorkerNativeCredentials::for_test(Some(credential)),
         )
@@ -256,8 +290,11 @@ mod tests {
         assert!(!request.contains(credential));
 
         let episodes = store::thread_read(&store_path, "session", "impl").unwrap();
-        assert_eq!(episodes.len(), 1);
-        assert_eq!(episodes[0].content, "worker answer");
+        assert!(
+            episodes.is_empty(),
+            "worker must leave durable episode ownership to the host"
+        );
+        assert_eq!(answer, "worker answer");
         assert!(
             store::TranscriptLogWriter::new(&store_path)
                 .unwrap()
@@ -289,7 +326,7 @@ mod tests {
         };
         let cancellation = ThreadCancellation::default();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        spawn_cancellation_listener(cancellation.clone(), Some(ready_tx));
+        spawn_cancellation_listener(cancellation.clone(), Some(ready_tx), None);
         ready_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("cancellation listener did not start reading");
