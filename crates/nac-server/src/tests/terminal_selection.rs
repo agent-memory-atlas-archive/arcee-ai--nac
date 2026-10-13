@@ -479,6 +479,26 @@ async fn terminal_selection_canonical_history_fork_keeps_source_without_copying_
     let admitted =
         nac_core::store::create_terminal_selection_intent(&manager.inner.store_path, &intent)
             .unwrap();
+    let projected: crate::InboxItemResponse = admitted.record.clone().into();
+    assert_eq!(
+        projected.terminal_selection.as_ref().unwrap().text,
+        intent.text
+    );
+    let lookalike = nac_core::store::create_session_inbox_item(
+        &manager.inner.store_path,
+        "source",
+        nac_core::store::InboxDelivery::Queue,
+        &admitted.record.content,
+        None,
+        None,
+    )
+    .unwrap();
+    let ordinary: crate::InboxItemResponse = lookalike.into();
+    assert!(ordinary.terminal_selection.is_none());
+    assert!(serde_json::to_value(&ordinary)
+        .unwrap()
+        .get("terminal_selection")
+        .is_none());
     let writer = nac_core::store::TranscriptLogWriter::new(&manager.inner.store_path).unwrap();
     let assistant = || nac_core::types::Message::Assistant {
         content: Some("observed evidence".into()),
@@ -587,6 +607,19 @@ async fn terminal_selection_canonical_history_fork_keeps_source_without_copying_
         );
         assert_eq!(
             page["terminal_selection_attributions"][0]["attribution"]["source_session_id"],
+            "source"
+        );
+        assert_eq!(
+            page["terminal_selection_attributions"][0]["evidence"]["text"],
+            intent.text
+        );
+        assert_eq!(
+            page["terminal_selection_attributions"][0]["evidence"]["user_text"],
+            intent.user_text.as_ref().unwrap().as_str()
+        );
+        assert_eq!(
+            page["terminal_selection_attributions"][0]["evidence"]["attribution"]
+                ["source_session_id"],
             "source"
         );
         let earlier = decode(
@@ -880,4 +913,112 @@ async fn terminal_selection_expected_text_bounds_are_specific_and_precede_admiss
     );
     assert!(!service.has_active_operation());
     service.terminate_user_terminal(&shell.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn terminal_selection_evidence_uses_canonical_indices_with_filtered_system_rows() {
+    let _lock = SERVER_MODEL_ENV_LOCK.lock().unwrap();
+    let root = temp_root("selection_filtered_indices");
+    let home = root.join("nac-home");
+    let _env = ScopedModelEnv::isolated(&home, Some("server-test-key"));
+    seed_direct_session(&root, "source");
+    let path = root.join("store.db");
+    let mut legacy = sessions::load_session(&path, "source").unwrap();
+    legacy.messages = vec![
+        Message::System {
+            content: "legacy system head".into(),
+        },
+        Message::User {
+            content: "ordinary legacy prompt".into(),
+        },
+        Message::System {
+            content: "another legacy system row".into(),
+        },
+    ];
+    sessions::save_session(&path, &legacy).unwrap();
+    let manager = test_manager(&root);
+    let intent = nac_core::store::TerminalSelectionIntent {
+        protocol_version: 1,
+        source_kind: nac_core::store::TerminalSelectionSourceKind::UserSuppliedRenderedSelection,
+        admission_id: uuid::Uuid::new_v4().to_string(),
+        capture_id: uuid::Uuid::new_v4().to_string(),
+        source_session_id: "source".into(),
+        terminal_id: "original-incarnation".into(),
+        owner_instance_id: uuid::Uuid::new_v4().to_string(),
+        client_capture_time_ms: Some("123".into()),
+        text: " literal selection \n[REDACTED] ".into(),
+        user_text: Some(" literal accompanying message ".into()),
+        initial_delivery: nac_core::store::TerminalSelectionDelivery::Queue,
+        initial_expected_run_id: None,
+    };
+    let admitted = nac_core::store::create_terminal_selection_intent(&path, &intent).unwrap();
+    let writer = nac_core::store::TranscriptLogWriter::new(&path).unwrap();
+    let evidence = Message::User {
+        content: admitted.record.content.clone(),
+    };
+    let assistant = Message::Assistant {
+        content: Some("selection observed".into()),
+        reasoning_text: None,
+        reasoning_details: None,
+        tool_calls: None,
+        duration_ms: None,
+        model_origin: None,
+        reasoning_field: None,
+    };
+    writer
+        .append_inbox_run_prompt("source", 3, &evidence, "selection-run", admitted.record.id)
+        .unwrap();
+    writer.append("source", 4, &assistant).unwrap();
+    let fork = manager.fork_session("source", 4).await.unwrap();
+    let app = router(manager);
+    for session in ["source", fork.session_id.as_str()] {
+        for query in [
+            format!("/sessions/{session}/messages?limit=2"),
+            format!("/sessions/{session}/messages?limit=2&include_system=true"),
+            format!("/sessions/{session}?message_limit=2"),
+            format!("/sessions/{session}?message_limit=2&include_system=true"),
+            format!("/sessions/{session}"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&query)
+                        .header(header::HOST, "localhost")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{query}");
+            let body = decode(response).await;
+            let references = body["terminal_selection_attributions"].as_array().unwrap();
+            assert_eq!(references.len(), 1, "{query}");
+            assert_eq!(references[0]["message_index"], 3, "{query}");
+            assert_eq!(references[0]["evidence"]["text"], intent.text, "{query}");
+            assert_eq!(
+                references[0]["evidence"]["user_text"],
+                intent.user_text.as_ref().unwrap().as_str(),
+                "{query}"
+            );
+            assert_eq!(
+                references[0]["evidence"]["attribution"]["source_session_id"], "source",
+                "{query}"
+            );
+        }
+    }
+    writer.append("source", 5, &evidence).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/sessions/source/messages?before=4&limit=1")
+                .header(header::HOST, "localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let copy = decode(response).await;
+    assert_eq!(copy["messages"][0]["content"], admitted.record.content);
+    assert!(copy.get("terminal_selection_attributions").is_none());
 }
