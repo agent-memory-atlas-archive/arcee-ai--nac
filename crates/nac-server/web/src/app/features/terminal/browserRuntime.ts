@@ -5,11 +5,13 @@ import {
   type UserTerminalApi,
 } from "../../../../packages/nac-client/src/index";
 import { createTerminalRenderer } from "./xtermAdapter";
+import { observeHumanTerminalInput } from "./humanInput";
 
 type Adapter = Awaited<ReturnType<typeof createTerminalRenderer>>;
 export interface TerminalControls {
   adapter: Adapter;
   pump: UserTerminalInputPump;
+  restoreFreshInput: () => boolean;
 }
 interface TerminalPorts {
   api: UserTerminalApi;
@@ -17,13 +19,15 @@ interface TerminalPorts {
   terminalId: string;
   host: HTMLDivElement;
   reconnect: boolean;
-  initialTyping: boolean;
-  previousFailure: { current: boolean };
+  previousFailure: {
+    current: boolean;
+    readonly available?: boolean;
+    subscribe?: (listener: () => void) => () => void;
+  };
   controls: (value: TerminalControls | null) => void;
   phase: (value: string) => void;
   notice: (value: string) => void;
   inputFailure: (value: boolean) => void;
-  needsInputEnable: (value: boolean) => void;
 }
 class TerminalOperationFailure extends Data.TaggedError("TerminalOperationFailure")<{
   operation: "renderer" | "attach" | "observe" | "resize" | "input";
@@ -52,8 +56,11 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
     else Effect.runSync(Scope.addFinalizer(scope, Effect.sync(release)));
   };
   let adapter: Adapter | undefined;
+  let connected = false;
+  let processAlive = false;
   const disconnected = (cause: unknown) => {
     if (!active()) return;
+    connected = false;
     ports.phase("Disconnected");
     ports.notice(message(cause, "Terminal observation failed"));
     if (adapter) adapter.terminal.options.disableStdin = true;
@@ -96,9 +103,30 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
       pump.dispose();
       ports.controls(null);
     });
-    ports.controls({ adapter: view, pump });
-    let connected = false;
-    let processAlive = false;
+    const restoreFreshInput = () => {
+      const enabled =
+        active() &&
+        connected &&
+        processAlive &&
+        !ports.previousFailure.current &&
+        ports.previousFailure.available !== false &&
+        !pump.needsAcknowledgement;
+      view.terminal.options.disableStdin = !enabled;
+      return enabled;
+    };
+    ports.controls({ adapter: view, pump, restoreFreshInput });
+    own(
+      ports.previousFailure.subscribe?.(() => {
+        if (!active()) return;
+        restoreFreshInput();
+        ports.inputFailure(ports.previousFailure.current);
+        ports.notice(
+          ports.previousFailure.current
+            ? "Input delivery was not confirmed. Check the shell before enabling fresh input."
+            : "Previous input will not be retried. Only fresh typing will be sent.",
+        );
+      }) ?? (() => {}),
+    );
     let resizeRunning = false;
     let latestGeometry: { cols: number; rows: number } | null = null;
     const resize = Effect.suspend(() => {
@@ -130,7 +158,17 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
       );
     });
     const send = (bytes: Uint8Array) => {
-      if (!active() || !connected || view.terminal.options.disableStdin) return;
+      const textarea = view.terminal.textarea;
+      if (
+        !active() ||
+        !connected ||
+        view.terminal.options.disableStdin ||
+        ports.previousFailure.current ||
+        ports.previousFailure.available === false ||
+        !textarea ||
+        textarea.ownerDocument.activeElement !== textarea
+      )
+        return;
       run(
         operation("input", () => pump.send(bytes)).pipe(
           Effect.catchAll((failure) =>
@@ -147,12 +185,7 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
         ),
       );
     };
-    const keyboard = view.terminal.onData((data) => send(new TextEncoder().encode(data)));
-    own(() => keyboard.dispose());
-    const binary = view.terminal.onBinary((data) =>
-      send(Uint8Array.from(data, (character) => character.charCodeAt(0))),
-    );
-    own(() => binary.dispose());
+    own(observeHumanTerminalInput(view.terminal, send));
     const observer = new ResizeObserver(() => run(resize));
     own(() => observer.disconnect());
     observer.observe(ports.host);
@@ -167,13 +200,16 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
     if (!active()) return;
     connected = true;
     processAlive = status.alive;
-    const enable =
-      status.alive && ports.initialTyping && !ports.reconnect && !ports.previousFailure.current;
-    view.terminal.options.disableStdin = !enable;
-    ports.needsInputEnable(status.alive && !enable);
+    // Attach observes only. Fresh focused keyboard events carry human intent;
+    // only actual unconfirmed delivery requires a separate acknowledgement.
+    restoreFreshInput();
     if (ports.previousFailure.current)
       ports.notice(
         "Input delivery was not confirmed. Check the shell before enabling fresh input.",
+      );
+    if (ports.previousFailure.available === false)
+      ports.notice(
+        "Input recovery storage is full. Acknowledge earlier failures, then reconnect before typing in another terminal.",
       );
     ports.phase(status.alive ? "Connected" : "Retained output");
     yield* resize;
@@ -184,6 +220,7 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
       connection.run(abort.signal, (frame) => {
         processAlive = frame.terminal.alive;
         if (!processAlive) latestGeometry = null;
+        restoreFreshInput();
         if (frame.gap && active())
           ports.notice(
             "Earlier output was discarded. The display was reset before retained output was replayed.",
@@ -191,6 +228,7 @@ export function openTerminalObservation(ports: TerminalPorts): () => void {
       }),
     );
     if (active()) {
+      connected = false;
       view.terminal.options.disableStdin = true;
       ports.phase("Output complete");
     }
