@@ -28,7 +28,8 @@ pub struct TerminalSession {
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     root_input_gate: Arc<std::sync::Mutex<()>>,
     observed_legacy_exit: bool,
-    native_owner: Option<nac_process::NativePtyOwner>,
+    shared_input_qualified: bool,
+    native_owner: Option<Arc<nac_process::NativePtyOwner>>,
     native_lifetime: Option<super::native_owner::NativeLifetime>,
     #[cfg(target_os = "linux")]
     root_start_time: u64,
@@ -113,6 +114,11 @@ impl TerminalSession {
     ) -> Result<Self> {
         let user_owned = user_output.is_some();
         let native_local = user_owned && matches!(backend.as_ref(), ExecutionBackend::Local { .. });
+        // Qualification never changes whether a model command can launch. It
+        // only admits the explicit human sharing workflow on the selected
+        // backend; failed native support has no Local/SSH/Podman fallback.
+        let shared_input_qualified = matches!(backend.as_ref(), ExecutionBackend::Local { .. })
+            && nac_process::NativePtyOwner::preflight().is_ok();
         let selection_redactor = user_output.as_ref().map(|policy| Arc::new(policy.fresh()));
         let pty_system = NativePtySystem::default();
         let pty_pair = pty_system
@@ -262,11 +268,50 @@ impl TerminalSession {
         let (child, native_owner, native_lifetime) = if native_local {
             let lifetime = native_lifetime.unwrap_or_default();
             let owner = super::native_owner::transfer(child, Arc::clone(&notify), lifetime.clone());
-            (None, Some(owner), Some(lifetime))
+            (None, Some(Arc::new(owner)), Some(lifetime))
         } else {
             (Some(child), None, native_lifetime)
         };
         let root_input_gate = Arc::new(std::sync::Mutex::new(()));
+        if let Some(owner) = &native_owner {
+            let observer = Arc::downgrade(owner);
+            writer.control.bind_liveness(Arc::new(move || {
+                observer
+                    .upgrade()
+                    .is_some_and(|owner| owner.accepts_input())
+            }));
+        } else {
+            let input_alive = Arc::clone(&alive);
+            #[cfg(unix)]
+            let probe = matches!(backend.as_ref(), ExecutionBackend::Local { .. }).then(|| {
+                (
+                    Arc::downgrade(&root_input_gate),
+                    child
+                        .as_ref()
+                        .and_then(|child| child.process_id())
+                        .map(|pid| pid as libc::pid_t),
+                )
+            });
+            writer.control.bind_liveness(Arc::new(move || {
+                if !input_alive.load(Ordering::SeqCst) {
+                    return false;
+                }
+                #[cfg(unix)]
+                if let Some((gate, pid)) = &probe {
+                    let (Some(gate), Some(pid)) = (gate.upgrade(), pid) else {
+                        return false;
+                    };
+                    // Refresh cannot reap/recycle this child while the writer
+                    // observes its exact root. Release before physical I/O.
+                    let _root = gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    return root_exit_observation(*pid) == Some(false)
+                        && input_alive.load(Ordering::SeqCst);
+                }
+                input_alive.load(Ordering::SeqCst)
+            }));
+        }
 
         Ok(TerminalSession {
             name,
@@ -278,6 +323,7 @@ impl TerminalSession {
             child,
             root_input_gate,
             observed_legacy_exit: false,
+            shared_input_qualified,
             native_owner,
             native_lifetime,
             #[cfg(target_os = "linux")]
@@ -308,18 +354,32 @@ impl TerminalSession {
         })
     }
 
-    pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.writer.write_model(data)?;
-        self.last_output_at = Instant::now();
-        Ok(())
+    #[cfg(test)]
+    pub(super) fn replace_input_writer_for_test(
+        &mut self,
+        writer: Box<dyn std::io::Write + Send>,
+    ) -> Result<PtyInput> {
+        let control = self.writer.control.clone();
+        Ok(std::mem::replace(
+            &mut self.writer,
+            PtyInput::with_control(writer, control)?,
+        ))
     }
 
-    pub(super) fn enqueue_user_input(
+    pub(super) fn input_control(&self) -> &super::controller::InputControl {
+        &self.writer.control
+    }
+
+    pub(super) fn enqueue_input(
         &mut self,
         bytes: &[u8],
+        ticket: super::InputTicket,
         cancellation: &crate::tools::ThreadCancellation,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), &'static str>>> {
-        let receipt = self.writer.enqueue_user(bytes, cancellation)?;
+    ) -> Result<super::input::InputReceipt> {
+        if ticket.incarnation != self.output_id {
+            return Err(anyhow::anyhow!("terminal incarnation changed"));
+        }
+        let receipt = self.writer.enqueue(bytes, ticket, cancellation)?;
         self.last_output_at = Instant::now();
         Ok(receipt)
     }
@@ -503,7 +563,7 @@ impl TerminalSession {
     }
 
     pub(super) fn native_owner(&self) -> Option<&nac_process::NativePtyOwner> {
-        self.native_owner.as_ref()
+        self.native_owner.as_deref()
     }
 
     pub(super) fn native_cleanup_pending(&self) -> bool {
@@ -512,14 +572,17 @@ impl TerminalSession {
             .is_some_and(|owner| owner.snapshot().cleanup_pending)
     }
 
+    pub(super) fn shared_input_qualified(&self) -> bool {
+        self.shared_input_qualified
+    }
+
     pub(super) fn accepts_user_input(&self) -> bool {
         if !self.user_owned && self.observed_legacy_exit {
             return false;
         }
-        self.native_owner.as_ref().map_or_else(
-            || self.is_alive(),
-            nac_process::NativePtyOwner::accepts_input,
-        )
+        self.native_owner
+            .as_ref()
+            .map_or_else(|| self.is_alive(), |owner| owner.accepts_input())
     }
 
     pub fn idle_duration(&self) -> Duration {
@@ -529,7 +592,7 @@ impl TerminalSession {
     pub fn pid(&self) -> Option<u32> {
         self.native_owner
             .as_ref()
-            .and_then(nac_process::NativePtyOwner::process_id)
+            .and_then(|owner| owner.process_id())
             .or_else(|| self.child.as_ref().and_then(|child| child.process_id()))
     }
 
@@ -550,6 +613,7 @@ impl TerminalSession {
     }
 
     pub async fn kill(&mut self) -> Result<()> {
+        self.writer.control.stop();
         if let Some(owner) = &self.native_owner {
             owner
                 .terminate()
@@ -674,9 +738,13 @@ impl TerminalSession {
     }
 }
 
+// Keep private physical-admission callers on the parent's one non-reaping primitive.
+#[cfg(unix)]
+pub(super) use super::process_observation::root_exited as root_exit_observation;
+
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        self.writer.flush_model();
+        self.writer.control.stop();
         if self.native_owner.is_some() {
             // The last owner requests worker cleanup. Its direct child adapter
             // retains lifetime leases until identity-safe cleanup and reap finish.

@@ -28,6 +28,29 @@ impl SubmittedUserTerminal {
     }
 }
 
+/// Invocation-only trusted human control intent. No wire/model constructor.
+pub(crate) struct SubmittedTerminalControl {
+    prepared: crate::terminal::PreparedControlChange,
+    target: crate::terminal::InputController,
+    acknowledge: bool,
+}
+
+impl SubmittedTerminalControl {
+    pub(crate) fn permission_resources(&self) -> Vec<crate::tools::kernel::PermissionResource> {
+        let mut resources = vec![crate::tools::kernel::PermissionResource::new(
+            "terminal_control",
+            &self.prepared.id,
+        )];
+        if self.target == crate::terminal::InputController::Human {
+            resources.push(crate::tools::kernel::PermissionResource::new(
+                "terminal_input",
+                &self.prepared.id,
+            ));
+        }
+        resources
+    }
+}
+
 pub(super) struct UserTerminalContext {
     runtime: crate::tools::ToolRuntime,
     client: crate::model::ModelClient,
@@ -200,6 +223,88 @@ impl SessionService {
             .await
     }
 
+    pub async fn terminal_input_control(
+        &self,
+        id: &str,
+    ) -> Result<crate::terminal::InputControlStatus> {
+        let _host_admission = self.user_terminal_host_admission(true).await?;
+        self.require_user_terminal_context()?;
+        self.require_current_input_owner().await?;
+        self.terminal_manager.input_control_status(id).await
+    }
+
+    /// Explicit trusted human ownership action. It grants no model policy
+    /// bypass and never enters the broker or saves a remembered grant.
+    pub async fn transfer_terminal_input_control(
+        &self,
+        id: &str,
+        expected: u64,
+        target: crate::terminal::InputController,
+        acknowledge: bool,
+    ) -> Result<crate::terminal::InputControlStatus> {
+        let _host_admission = self.user_terminal_host_admission(false).await?;
+        self.require_user_terminal_context()?;
+        self.require_current_input_owner().await?;
+        let submission = SubmittedTerminalControl {
+            prepared: self
+                .terminal_manager
+                .prepare_control_change(id, expected)
+                .await?,
+            target,
+            acknowledge,
+        };
+        let broker = self
+            .permission_broker
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("direct permission broker is unavailable"))?;
+        broker.authorize_submitted_terminal_control(&submission)?;
+        self.terminal_manager
+            .transfer_prepared_input_control(
+                &submission.prepared,
+                submission.target,
+                submission.acknowledge,
+            )
+            .await
+    }
+
+    pub async fn write_controlled_terminal_input(
+        &self,
+        id: &str,
+        expected: u64,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let _host_admission = self.user_terminal_host_admission(false).await?;
+        let context = self.require_user_terminal_context()?;
+        self.require_current_input_owner().await?;
+        self.terminal_manager
+            .write_controlled_human_input(
+                id,
+                expected,
+                bytes,
+                &context.runtime.command_cancellation,
+            )
+            .await
+    }
+
+    pub async fn write_controlled_terminal_input_receipt(
+        &self,
+        id: &str,
+        expected: u64,
+        bytes: &[u8],
+    ) -> Result<crate::terminal::InputDeliveryReceipt> {
+        let _host_admission = self.user_terminal_host_admission(false).await?;
+        let context = self.require_user_terminal_context()?;
+        self.require_current_input_owner().await?;
+        self.terminal_manager
+            .write_controlled_human_input_receipt(
+                id,
+                expected,
+                bytes,
+                &context.runtime.command_cancellation,
+            )
+            .await
+    }
+
     pub async fn resize_user_terminal(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
         let _host_admission = self.user_terminal_host_admission(true).await?;
         let context = self.require_user_terminal_context()?;
@@ -237,6 +342,25 @@ impl SessionService {
                 }
             }
             .map(Some)
+        })
+        .await?
+    }
+
+    async fn require_current_input_owner(&self) -> Result<()> {
+        self.require_direct_primary_behavior_async().await?;
+        let service = self.clone();
+        crate::store::call_legacy_store(&self.metadata.store_path, move || {
+            let id = service
+                .metadata
+                .session_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("session identity is unavailable"))?;
+            let current = sessions::load_session_config(&service.metadata.store_path, id)?;
+            anyhow::ensure!(
+                Some(current.config_version) == service.config_version,
+                "session configuration changed; terminal input owner is unavailable"
+            );
+            Ok(())
         })
         .await?
     }

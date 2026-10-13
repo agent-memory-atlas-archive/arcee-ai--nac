@@ -55,21 +55,47 @@ test("user commands, live terminal and explicit queued selection share one sessi
   expect((await api.getPermissions(session)).requests).toHaveLength(0);
   expect((await api.getUserTerminal(session, shell.terminal_id)).alive).toBe(true);
 
-  const geometry = await api.getUserTerminal(session, shell.terminal_id);
-  const rows = await pane.locator(".xterm-accessibility-tree > div").allTextContents();
+  // Exercise a real resize while the user command owns execution admission.
+  const beforeResize = await api.getUserTerminal(session, shell.terminal_id);
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ width: viewport.width, height: viewport.height + 300 });
+  await expect
+    .poll(async () => (await api.getUserTerminal(session, shell.terminal_id)).rows)
+    .not.toBe(beforeResize.rows);
+  const screen = pane.locator(".xterm-screen");
+  await expect(screen).toBeVisible();
+  await screen.scrollIntoViewIfNeeded();
+  await expect(pane.locator(".xterm-accessibility")).toContainText(evidence);
+  const lines = pane.locator(".xterm-rows > div");
+  const rows = await lines.allTextContents();
   const row = rows.findIndex((text) => text.trimEnd() === evidence);
   expect(row).toBeGreaterThanOrEqual(0);
-  const grid = await pane.locator(".xterm-screen").boundingBox();
-  expect(grid).not.toBeNull();
-  const cell = grid!.width / geometry.cols;
-  const y = grid!.y + ((row + 0.5) * grid!.height) / geometry.rows;
-  await page.mouse.move(grid!.x + 0.25 * cell, y);
+  // The painted DOM row follows the live viewport; screen-reader rows can lag
+  // a resize. Measure the first ASCII cell instead of cached server geometry.
+  const bounds = await lines.nth(row).boundingBox();
+  const firstSpan = lines.nth(row).locator("span").first();
+  const spanBounds = await firstSpan.boundingBox();
+  const spanText = (await firstSpan.textContent())!;
+  expect(bounds).not.toBeNull();
+  expect(spanBounds).not.toBeNull();
+  expect(spanText.length).toBeGreaterThan(0);
+  const cell = spanBounds!.width / spanText.length;
+  const y = bounds!.y + bounds!.height / 2;
+  const startX = bounds!.x + 0.25 * cell;
+  const endX = bounds!.x + (evidence.length + 0.25) * cell;
+  const currentViewport = page.viewportSize()!;
+  expect(
+    startX >= 0 && endX < currentViewport.width && y >= 0 && y < currentViewport.height,
+    `selection drag must be inside the viewport: ${JSON.stringify({ startX, endX, y })}`,
+  ).toBe(true);
+  await page.mouse.move(startX, y);
   await page.mouse.down();
-  await page.mouse.move(grid!.x + (evidence.length + 0.25) * cell, y, { steps: 10 });
+  await page.mouse.move(endX, y, { steps: 10 });
   await page.mouse.up();
   await pane.getByRole("button", { name: "Review selected text", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Review terminal selection" });
   await expect(dialog.getByLabel("Reviewed selected text")).toHaveText(evidence);
+  await page.setViewportSize(viewport);
   await expect(
     dialog.getByRole("radio", { name: "Send as a new turn (idle chat)" }),
   ).toBeDisabled();
@@ -162,10 +188,15 @@ test("manual human terminal freezes accepted uncertain input until acknowledgeme
   await pane.getByRole("button", { name: "New shell", exact: true }).click();
   await expect(pane.getByText("Connected", { exact: true })).toBeVisible();
   const shell = (await api.listUserTerminals(session)).terminals[0];
-  const inputUrl = `${harness.baseUrl}/sessions/${session}/user-terminals/${shell.terminal_id}/input`;
+  const legacyInputUrl = `${harness.baseUrl}/sessions/${session}/user-terminals/${shell.terminal_id}/input`;
+  const executionInputUrl = `${harness.baseUrl}/sessions/${session}/executions/${shell.terminal_id}/input`;
+  const inputUrls = new Set([legacyInputUrl, executionInputUrl]);
   const inputs: number[][] = [];
+  let controlledInputUsed = false;
   page.on("request", (sent) => {
-    if (sent.url() === inputUrl && sent.method() === "POST") inputs.push(sent.postDataJSON().bytes);
+    if (inputUrls.has(sent.url()) && sent.method() === "POST")
+      inputs.push(sent.postDataJSON().bytes);
+    if (sent.url() === executionInputUrl && sent.method() === "POST") controlledInputUsed = true;
   });
   await pane.getByRole("button", { name: "Focus terminal", exact: true }).click();
   const command = "printf accepted >> uncertain-effects.txt";
@@ -173,11 +204,17 @@ test("manual human terminal freezes accepted uncertain input until acknowledgeme
   await expect(pane.locator(".xterm-accessibility")).toContainText(command);
   // The Enter reaches the real process. Only its reply is replaced, proving
   // accepted-but-uncertain delivery instead of a pre-dispatch failure.
+  let injectedReceiptLoss = false;
   await page.route(
-    inputUrl,
+    (url) => inputUrls.has(url.href),
     async (route) => {
       const response = await route.fetch();
-      expect(response.status()).toBe(204);
+      if (route.request().url() === legacyInputUrl) expect(response.status()).toBe(204);
+      else {
+        expect(response.status()).toBe(200);
+        expect((await response.json()).outcome).toBe("written");
+      }
+      injectedReceiptLoss = true;
       await route.fulfill({ status: 500, json: { error: "Input receipt lost" } });
     },
     { times: 1 },
@@ -185,6 +222,7 @@ test("manual human terminal freezes accepted uncertain input until acknowledgeme
   await page.keyboard.press("Enter");
   const file = path.join(harness.runRoot, "workspace/uncertain-effects.txt");
   await expect.poll(() => fs.readFile(file, "utf8").catch(() => "")).toBe("accepted");
+  expect(injectedReceiptLoss).toBe(true);
   const acknowledge = pane.getByRole("button", {
     name: "Acknowledge failure and enable fresh input",
     exact: true,
@@ -211,7 +249,31 @@ test("manual human terminal freezes accepted uncertain input until acknowledgeme
   await page.keyboard.type("still-frozen");
   expect(inputs).toHaveLength(count);
   expect(await fs.readFile(file, "utf8")).toBe("accepted");
+  const controlUrl = `${harness.baseUrl}/sessions/${session}/executions/${shell.terminal_id}/input-control`;
+  const beforeControl = controlledInputUsed
+    ? await api.getTerminalInputControl(session, shell.terminal_id)
+    : undefined;
+  const confirmed = beforeControl
+    ? page.waitForResponse((response) => {
+        if (response.url() !== controlUrl || response.request().method() !== "POST") return false;
+        const body = response.request().postDataJSON();
+        return (
+          body.expected_revision === beforeControl.revision && body.acknowledge_uncertainty === true
+        );
+      })
+    : undefined;
   await acknowledge.click();
+  if (confirmed && beforeControl) {
+    const response = await confirmed;
+    expect(response.status()).toBe(200);
+    const afterControl = await response.json();
+    expect(afterControl.controller).toBe("human");
+    expect(afterControl.frozen).toBe(false);
+    expect(BigInt(afterControl.revision)).toBe(BigInt(beforeControl.revision) + 1n);
+  }
+  await expect(acknowledge).toHaveCount(0);
+  // Confirm the existing public terminal focus behavior after server acceptance.
+  await expect(pane.locator(".xterm-helper-textarea")).toBeFocused();
   await page.keyboard.type("printf fresh >> uncertain-effects.txt");
   await page.keyboard.press("Enter");
   await expect.poll(() => fs.readFile(file, "utf8").catch(() => "")).toBe("acceptedfresh");
@@ -251,10 +313,15 @@ test("reattach observation sends no retained terminal-query replies before focus
       fs.readFile(path.join(harness.runRoot, "workspace/query-ready"), "utf8").catch(() => ""),
     )
     .toBe("ready");
-  const inputUrl = `${harness.baseUrl}/sessions/${session}/user-terminals/${shell.terminal_id}/input`;
+  const inputUrls = new Set(
+    ["user-terminals", "executions"].map(
+      (kind) => `${harness.baseUrl}/sessions/${session}/${kind}/${shell.terminal_id}/input`,
+    ),
+  );
   const inputs: number[][] = [];
   page.on("request", (sent) => {
-    if (sent.url() === inputUrl && sent.method() === "POST") inputs.push(sent.postDataJSON().bytes);
+    if (inputUrls.has(sent.url()) && sent.method() === "POST")
+      inputs.push(sent.postDataJSON().bytes);
   });
   await page.goto(`${harness.baseUrl}/#/session/${session}/terminal`);
   const show = page.getByRole("button", { name: "Show panel", exact: true });

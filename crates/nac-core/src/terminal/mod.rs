@@ -1,4 +1,9 @@
 mod collector;
+mod controller;
+pub(crate) use controller::InputTicket;
+pub use controller::{
+    InputControlStatus, InputController, InputDeliveryOutcome, InputDeliveryReceipt,
+};
 mod input;
 mod keyparse;
 mod manager;
@@ -6,7 +11,9 @@ mod native_owner;
 mod output;
 mod process_observation;
 mod session;
-pub(crate) use manager::{validate_user_geometry, ResolvedUserTerminalLaunch};
+pub(crate) use manager::{
+    validate_user_geometry, PreparedControlChange, ResolvedUserTerminalLaunch,
+};
 pub use manager::{
     ExecutionOrigin, ExecutionProcessState, ExecutionRepresentation, ExecutionStatus,
     TerminalManager, TerminalSelectionError, UserTerminalSelectionPreview,
