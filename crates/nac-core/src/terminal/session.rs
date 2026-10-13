@@ -26,6 +26,8 @@ pub struct TerminalSession {
     preview_cursor: u64,
     output_notify: Arc<Notify>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    root_input_gate: Arc<std::sync::Mutex<()>>,
+    observed_legacy_exit: bool,
     native_owner: Option<nac_process::NativePtyOwner>,
     native_lifetime: Option<super::native_owner::NativeLifetime>,
     #[cfg(target_os = "linux")]
@@ -51,6 +53,8 @@ pub struct TerminalSession {
     /// `terminal_pty_command` get a backend-side kill on session teardown.
     backend_cleanup: Option<(Arc<ExecutionBackend>, String)>,
     durable_cleanup: Option<(PathBuf, String, String)>,
+    pub(super) backend_label: String,
+    pub(super) observation_cwd: String,
     pub cwd: PathBuf,
     pub cols: u16,
     pub rows: u16,
@@ -61,6 +65,7 @@ impl TerminalSession {
         clippy::too_many_arguments,
         reason = "PTY creation keeps command, geometry, backend, output lease, and environment authority explicit"
     )]
+    #[cfg(test)]
     pub fn spawn(
         name: String,
         command: &str,
@@ -84,6 +89,7 @@ impl TerminalSession {
             cleanup_authority,
             None,
             None,
+            nac_contracts::CommandEnvironmentSnapshot::empty().stream_redactor(),
         )
     }
 
@@ -103,6 +109,7 @@ impl TerminalSession {
         cleanup_authority: Option<(PathBuf, String)>,
         user_output: Option<nac_contracts::CommandOutputRedactor>,
         native_lifetime: Option<super::native_owner::NativeLifetime>,
+        agent_output: nac_contracts::CommandOutputRedactor,
     ) -> Result<Self> {
         let user_owned = user_output.is_some();
         let native_local = user_owned && matches!(backend.as_ref(), ExecutionBackend::Local { .. });
@@ -125,6 +132,7 @@ impl TerminalSession {
             output_registry.create(ArtifactKind::Pty)?
         };
         let output_id = output_lease.output_id().to_string();
+        output_registry.mark_sanitized(&output_id);
 
         let mut envs = if user_owned {
             user_terminal_env()
@@ -146,6 +154,10 @@ impl TerminalSession {
         // backend's terminal_pty_command: explicit cwd if provided, otherwise
         // the backend's default terminal directory. Keep these in sync.
         let resolved_cwd = cwd.unwrap_or_else(|| backend.default_terminal_cwd());
+        let mut cwd_redactor = user_output.as_ref().unwrap_or(&agent_output).fresh();
+        let mut masked_cwd = cwd_redactor.push(resolved_cwd.to_string_lossy().as_bytes());
+        masked_cwd.extend(cwd_redactor.finish());
+        let observation_cwd = String::from_utf8_lossy(&masked_cwd).into_owned();
         let backend_cleanup = pidfile.map(|pidfile| (Arc::clone(backend), pidfile));
         // Prepare every fallible PTY I/O handle before a child or durable
         // cleanup obligation can exist.
@@ -165,7 +177,7 @@ impl TerminalSession {
         let collector = PtyCollector {
             registry: output_registry,
             output_id: output_id.clone(),
-            redactor: user_output,
+            redactor: Some(user_output.unwrap_or(agent_output)),
             alive: Arc::clone(&alive),
             notify: Arc::clone(&notify),
             state: collector_state.clone(),
@@ -254,6 +266,7 @@ impl TerminalSession {
         } else {
             (Some(child), None, native_lifetime)
         };
+        let root_input_gate = Arc::new(std::sync::Mutex::new(()));
 
         Ok(TerminalSession {
             name,
@@ -263,6 +276,8 @@ impl TerminalSession {
             preview_cursor: 0,
             output_notify: notify,
             child,
+            root_input_gate,
+            observed_legacy_exit: false,
             native_owner,
             native_lifetime,
             #[cfg(target_os = "linux")]
@@ -285,6 +300,8 @@ impl TerminalSession {
             _telemetry_child: None,
             backend_cleanup,
             durable_cleanup,
+            backend_label: super::manager::observation::backend_label(backend).to_owned(),
+            observation_cwd,
             cwd: resolved_cwd,
             cols,
             rows,
@@ -376,6 +393,10 @@ impl TerminalSession {
             self.alive.store(status.leader_alive, Ordering::SeqCst);
             return;
         }
+        let root_gate = Arc::clone(&self.root_input_gate);
+        let _root = root_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.exit_code.is_some() {
             self.alive.store(false, Ordering::SeqCst);
             return;
@@ -417,26 +438,44 @@ impl TerminalSession {
         else {
             return false;
         };
-        // SAFETY: `siginfo_t` is a C output record for which the all-zero byte
-        // pattern is a valid initialized state before `waitid` fills it.
-        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
-        // SAFETY: `info` is writable for one `siginfo_t`, `pid` is an integer
-        // child id, and the flag combination requests a non-reaping status read.
-        let result = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                pid as libc::id_t,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        // SAFETY: `info` is initialized above and either remains zeroed or was
-        // populated by `waitid`, so reading its pid field is valid.
-        result == 0 && unsafe { info.si_pid() } == pid
+        super::process_observation::root_exited(pid) == Some(true)
+    }
+
+    pub(super) fn cache_process_exit_observation(&mut self) -> bool {
+        if self.native_owner.is_some() || self.exit_code.is_some() || self.observed_legacy_exit {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            let root_gate = Arc::clone(&self.root_input_gate);
+            let _root = match root_gate.try_lock() {
+                Ok(root) => root,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return true,
+            };
+            if self.root_exited_without_reaping() {
+                self.observed_legacy_exit = true;
+                self.output_notify.notify_waiters();
+                self.output_notify.notify_one();
+                return false;
+            }
+            true
+        }
+        #[cfg(not(unix))]
+        false
+    }
+
+    pub(super) fn observation_cleanup_pending(&self) -> bool {
+        self.native_cleanup_pending()
+            || (!self.user_owned && self.observed_legacy_exit && self.exit_code.is_none())
     }
 
     pub fn exit_code(&self) -> Option<i32> {
-        self.exit_code
+        // Native human ownership publishes cached settlement independently of
+        // model polling. Observation must not call refresh_status/reap to see it.
+        self.native_owner
+            .as_ref()
+            .map_or(self.exit_code, |owner| owner.snapshot().exit_code)
     }
 
     pub fn retain(
@@ -474,6 +513,9 @@ impl TerminalSession {
     }
 
     pub(super) fn accepts_user_input(&self) -> bool {
+        if !self.user_owned && self.observed_legacy_exit {
+            return false;
+        }
         self.native_owner.as_ref().map_or_else(
             || self.is_alive(),
             nac_process::NativePtyOwner::accepts_input,

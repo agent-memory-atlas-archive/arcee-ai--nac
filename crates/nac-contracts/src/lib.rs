@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 mod command_output_redaction;
+mod command_pipe_redaction;
 pub use command_output_redaction::{CommandOutputRedactor, RedactedCommandPlainText};
+pub use command_pipe_redaction::CommandPipeRedactor;
 
 /// Canonical public NAC product version sourced from the repository root.
 ///
@@ -277,6 +279,24 @@ impl CommandEnvironmentSnapshot {
     /// Sanitize before retaining or publishing any bytes to observers.
     pub fn stream_redactor(&self) -> CommandOutputRedactor {
         CommandOutputRedactor::new(&self.redactions)
+    }
+
+    /// PTYs may expand LF to CRLF before collection. Keep the original launch
+    /// values and their standard cooked-output form in the same finite policy;
+    /// neither replay nor a rendered page needs a second masking pass.
+    pub fn pty_redactor(&self) -> CommandOutputRedactor {
+        let mut values = self.redactions.clone();
+        values.extend(
+            self.redactions
+                .iter()
+                .map(|value| value.replace('\n', "\r\n")),
+        );
+        CommandOutputRedactor::new(&values)
+    }
+
+    /// Masks both stream-local and observed combined pipe bytes exactly once.
+    pub fn pipe_redactor(&self) -> CommandPipeRedactor {
+        CommandPipeRedactor::new(&self.redactions)
     }
 }
 

@@ -4,9 +4,11 @@ mod keyparse;
 mod manager;
 mod native_owner;
 mod output;
+mod process_observation;
 mod session;
 pub(crate) use manager::{validate_user_geometry, ResolvedUserTerminalLaunch};
 pub use manager::{
+    ExecutionOrigin, ExecutionProcessState, ExecutionRepresentation, ExecutionStatus,
     TerminalManager, TerminalSelectionError, UserTerminalSelectionPreview,
     MAX_TERMINAL_SELECTION_SCALARS, MAX_TERMINAL_SELECTION_UTF8_BYTES,
 };
